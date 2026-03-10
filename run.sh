@@ -333,12 +333,14 @@ cmd_llm() {
     model_args=(-m llama-server)
   fi
 
+  cd "$LLM_USER_PATH"
+
   exec sandbox-exec \
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
     -D PKG_STORE="$(pkg_store_for "$llm_bin")" \
     -D LLM_USER_PATH="$LLM_USER_PATH" \
     -f "$SCRIPT_DIR/llm.sb" \
-    "$llm_bin" "${model_args[@]}" --no-tools "$@"
+    "$llm_bin" "${model_args[@]}" "$@"
 }
 
 # ── Main ──────────────────────────────────────────────────
