@@ -32,12 +32,10 @@
   (literal "/dev/random")
   (literal "/dev/urandom"))
 
-;; ── Nix store (read + executable mapping) ────────────────
-;; Both profiles need this for loading shared libraries.
-;; Harmless if /nix/store does not exist.
+;; ── Package store (read + executable mapping) ───────────
+;; Set by run.sh: /nix for Nix, /opt/homebrew for Homebrew.
 (allow file-read* file-map-executable
-  (subpath "/nix/store")
-  (subpath "/nix/var"))
+  (subpath (param "PKG_STORE")))
 
 ;; ── NSTemporaryDirectory ──────────────────────────────────
 ;; Apple frameworks (Metal, CoreFoundation) use confstr(_CS_DARWIN_USER_TEMP_DIR)

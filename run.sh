@@ -35,7 +35,6 @@ llama options:
   --top-k N             Top-k sampling (default: 20)
   --min-p N             Min-p sampling (default: 0)
   --presence-penalty N  Presence penalty (default: 0)
-  --port N              Listen port (default: 8080)
 
 opencode options:
   -w, --workspace DIR   Workspace directory (default: script dir)
@@ -43,7 +42,7 @@ opencode options:
 
 Environment:
   MODEL             Model spec (overridden by --model)
-  LLAMA_SERVER      Explicit path to llama-server binary (non-Nix fallback)
+  LLAMA_SERVER      Explicit path to llama-server binary (fallback: PATH)
 EOF
   exit 1
 }
@@ -106,24 +105,35 @@ resolve_model() {
   die "model not found: $spec (use a local path or org/repo:file.gguf)"
 }
 
-# Locate the llama-server binary.
-# Priority: LLAMA_SERVER env > nix build
-resolve_llama_server() {
-  if [[ -n "${LLAMA_SERVER:-}" ]]; then
-    [[ -x "$LLAMA_SERVER" ]] || die "LLAMA_SERVER not executable: $LLAMA_SERVER"
-    printf '%s' "$LLAMA_SERVER"
+# Locate an executable.
+# Priority: explicit env var > PATH lookup
+resolve_binary() {
+  local env_val="$1" name="$2"
+
+  if [[ -n "$env_val" ]]; then
+    [[ -x "$env_val" ]] || die "$name not executable: $env_val"
+    printf '%s' "$(cd "$(dirname "$env_val")" && pwd)/$(basename "$env_val")"
     return
   fi
 
-  if command -v nix &>/dev/null; then
-    local store_path
-    if store_path="$(nix build "${SCRIPT_DIR}#llama-cpp" --no-link --print-out-paths 2>/dev/null)"; then
-      printf '%s/bin/llama-server' "$store_path"
-      return
-    fi
+  local path
+  if path="$(command -v "$name" 2>/dev/null)"; then
+    printf '%s' "$path"
+    return
   fi
 
-  die "llama-server not found. Install via 'nix build' or set LLAMA_SERVER."
+  die "$name not found on PATH. Install it or set ${name^^} env var."
+}
+
+# Detect the package store prefix from a binary path.
+# Returns /nix for Nix, /opt/homebrew for Homebrew.
+pkg_store_for() {
+  local bin="$1"
+  case "$bin" in
+  /nix/*) printf '/nix' ;;
+  /opt/homebrew/*) printf '/opt/homebrew' ;;
+  *) die "cannot determine package store for: $bin" ;;
+  esac
 }
 
 # Write llama-server state so cmd_opencode can generate a matching config.
@@ -211,10 +221,6 @@ cmd_llama() {
       presence_penalty="$2"
       shift 2
       ;;
-    --port)
-      PORT="$2"
-      shift 2
-      ;;
     *) die "unknown llama option: $1" ;;
     esac
   done
@@ -225,7 +231,7 @@ cmd_llama() {
   model_path="$(resolve_model "$MODEL")"
 
   local llama_server
-  llama_server="$(resolve_llama_server)"
+  llama_server="$(resolve_binary "${LLAMA_SERVER:-}" "llama-server")"
 
   local model_dir
   model_dir="$(dirname "$model_path")"
@@ -252,6 +258,7 @@ cmd_llama() {
 
   exec sandbox-exec \
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
+    -D PKG_STORE="$(pkg_store_for "$llama_server")" \
     -D LLAMA_SERVER="$llama_server" \
     -D MODEL_DIR="$model_dir" \
     -D CACHE_DIR="$CACHE_DIR" \
@@ -294,19 +301,26 @@ cmd_opencode() {
 
   generate_opencode_config "$workspace"
 
+  local opencode_bin
+  opencode_bin="$(resolve_binary "${OPENCODE:-}" "opencode")"
+
   ulimit -n 2147483646
 
   exec sandbox-exec \
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
+    -D PKG_STORE="$(pkg_store_for "$opencode_bin")" \
     -D WORKSPACE="$workspace" \
     -D OPENCODE_DIR="$STATE_DIR" \
     -f "$SCRIPT_DIR/opencode.sb" \
-    opencode "$@"
+    "$opencode_bin" "$@"
 }
 
 cmd_llm() {
   export LLM_USER_PATH="$STATE_DIR/llm"
   mkdir -p "$LLM_USER_PATH"
+
+  local llm_bin
+  llm_bin="$(resolve_binary "${LLM:-}" "llm")"
 
   # Default to llama-server model if no -m flag given
   local has_model=false
@@ -314,11 +328,17 @@ cmd_llm() {
     [[ "$arg" == "-m" || "$arg" == "--model" ]] && has_model=true
   done
 
+  local model_args=()
   if [[ "$has_model" == false ]]; then
-    exec llm -m llama-server "$@"
-  else
-    exec llm "$@"
+    model_args=(-m llama-server)
   fi
+
+  exec sandbox-exec \
+    -D COMMON_SB="$SCRIPT_DIR/common.sb" \
+    -D PKG_STORE="$(pkg_store_for "$llm_bin")" \
+    -D LLM_USER_PATH="$LLM_USER_PATH" \
+    -f "$SCRIPT_DIR/llm.sb" \
+    "$llm_bin" "${model_args[@]}" --no-tools "$@"
 }
 
 # ── Main ──────────────────────────────────────────────────

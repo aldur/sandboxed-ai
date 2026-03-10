@@ -6,10 +6,8 @@
 (import (param "COMMON_SB"))
 
 ;; ── Process ──────────────────────────────────────────────
-;; Nix store contains all binaries opencode will ever need.
 (allow process-exec
-  (subpath "/nix/store")
-  (subpath "/nix/var")
+  (subpath (param "PKG_STORE"))
   (literal "/usr/bin/env")
   (literal "/bin/bash")
   (literal "/bin/zsh")
@@ -71,7 +69,7 @@
 
 ;; ── Network: localhost llama-server only ──────────────────
 (allow network-outbound
-  (remote tcp "localhost:*"))
+  (remote tcp "localhost:8080"))
 
 ;; ── System libs (locale + timezone + devices) ────────────
 (allow file-read*

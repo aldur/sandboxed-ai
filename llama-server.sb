@@ -76,8 +76,8 @@
   (ipc-posix-name-prefix "com.apple.GPUCompiler")
   (ipc-posix-name-prefix "com.apple.ane"))
 
-;; ── Network: localhost only, port configured via run.sh ──
+;; ── Network: localhost only, port 8080 ──────────────────
 (allow network-bind network-inbound
-  (local tcp "localhost:*"))
+  (local tcp "localhost:8080"))
 
 (deny network-outbound (with send-signal SIGKILL))

@@ -1,0 +1,29 @@
+; vim:ft=scheme
+(version 1)
+(deny default)
+
+;; llm CLI sandbox
+(import (param "COMMON_SB"))
+
+;; ── Process ──────────────────────────────────────────────
+(allow process-exec
+  (subpath (param "PKG_STORE"))
+  (literal "/usr/bin/env")
+  (literal "/bin/bash")
+  (literal "/bin/sh"))
+
+(allow process-fork)
+
+;; ── LLM state ──────────────────────────────────────────
+(allow file-read* file-write*
+  (subpath (param "LLM_USER_PATH")))
+
+;; ── Network: localhost llama-server only ──────────────────
+(allow network-outbound
+  (remote tcp "localhost:8080"))
+
+;; ── TTY (interactive prompts) ────────────────────────────
+(allow file-read* file-write* file-ioctl
+  (subpath "/dev/tty")
+  (subpath "/dev/pty")
+  (regex #"^/dev/ttys[0-9]+$"))
