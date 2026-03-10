@@ -78,19 +78,19 @@ resolve_model() {
       mkdir -p "$(dirname "$target")"
       curl -L -C - --progress-bar \
         -o "$target" \
-        "https://huggingface.co/$repo/resolve/main/$file" \
-        || die "failed to download $repo/$file"
+        "https://huggingface.co/$repo/resolve/main/$file" ||
+        die "failed to download $repo/$file"
 
       printf '%s' "$target"
       return
     else
       info "fetching:" "file list for $spec"
       local files
-      files="$(curl -sf "https://huggingface.co/api/models/$spec" \
-        | grep -o '"rfilename":"[^"]*\.gguf"' \
-        | sed 's/"rfilename":"//;s/"//' \
-        | sort)" \
-        || die "failed to fetch file list for $spec"
+      files="$(curl -sf "https://huggingface.co/api/models/$spec" |
+        grep -o '"rfilename":"[^"]*\.gguf"' |
+        sed 's/"rfilename":"//;s/"//' |
+        sort)" ||
+        die "failed to fetch file list for $spec"
 
       if [[ -z "$files" ]]; then
         die "no GGUF files found in $spec"
@@ -302,7 +302,6 @@ cmd_opencode() {
     -D OPENCODE_DIR="$STATE_DIR" \
     -D GITCONFIG="$HOME/.gitconfig" \
     -D GIT_CONFIG_ALT="$HOME/.config/git/config" \
-    -D SSH_KNOWN_HOSTS="$HOME/.ssh/known_hosts" \
     -f "$SCRIPT_DIR/opencode.sb" \
     opencode "$@"
 }

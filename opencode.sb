@@ -20,10 +20,6 @@
 (allow process-fork)
 (allow process-info-setcontrol)
 
-;; ── DNS resolution (localhost lookup) ────────────────────
-(allow network-outbound
-  (path "/private/var/run/mDNSResponder"))
-
 ;; ── Network config + TLS ─────────────────────────────────
 (allow file-read*
   (literal "/private/etc/ssl/cert.pem")
@@ -54,10 +50,7 @@
   (iokit-user-client-class "IOHIDEventSystemUserClient"))
 
 ;; ── Sysctl ───────────────────────────────────────────────
-(allow sysctl-read
-  (sysctl-name "kern.maxfilesperproc"))
-
-(allow sysctl-write
+(allow sysctl-read sysctl-write
   (sysctl-name "kern.maxfilesperproc"))
 
 ;; ── TTY (TUI rawmode) ────────────────────────────────────
@@ -70,7 +63,7 @@
 (allow file-read*
   (literal (param "GITCONFIG"))
   (literal (param "GIT_CONFIG_ALT"))
-  (literal (param "SSH_KNOWN_HOSTS")))
+)
 
 ;; ── Workspace: full read + write ─────────────────────────
 (allow file-read* file-write*

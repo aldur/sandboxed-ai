@@ -29,7 +29,8 @@
   (iokit-user-client-class "AppleH11ANEUserClientV2")
   (iokit-user-client-class "ANEUserClient")
   (iokit-user-client-class "IOAcceleratorClient")
-  (iokit-user-client-class "IOGPUDeviceUserClient"))
+  (iokit-user-client-class "IOGPUDeviceUserClient")
+  (iokit-user-client-class "IOSurfaceRootUserClient"))
 
 (allow iokit-get-properties
   (iokit-property "gpu-core-count")
@@ -58,6 +59,14 @@
 (allow file-read* file-write* file-lock
   (subpath (param "CACHE_DIR"))
   (subpath (param "TMPDIR")))
+
+;; ── Sandbox extensions for MTLCompilerService ──────────
+;; Metal shader compilation runs in an XPC service (MTLCompilerService).
+;; It needs sandbox extensions issued by llama-server to access paths.
+(allow file-issue-extension
+  (require-all
+    (extension-class "com.apple.app-sandbox.read-write")
+    (subpath "/private/var/folders")))
 
 ;; ── Shared memory (Metal command buffers) ────────────────
 (allow ipc-posix-shm-read-data

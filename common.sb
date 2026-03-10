@@ -43,8 +43,10 @@
 ;; Apple frameworks (Metal, CoreFoundation) use confstr(_CS_DARWIN_USER_TEMP_DIR)
 ;; which resolves to /private/var/folders/.../T/. This cannot be redirected
 ;; via TMPDIR. file-map-executable is needed for Metal shader compilation.
+;; /var is a symlink to /private/var but the sandbox may not resolve it
 (allow file-read* file-write* file-map-executable file-lock
-  (subpath "/private/var/folders"))
+  (subpath "/private/var/folders")
+)
 
 ;; ── Logging ──────────────────────────────────────────────
 (allow file-write*
