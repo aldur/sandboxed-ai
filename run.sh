@@ -8,6 +8,7 @@ PORT=8080
 STATE_DIR="$SCRIPT_DIR/.opencode"
 CACHE_DIR="$STATE_DIR/cache"
 TMPDIR="$STATE_DIR/tmp"
+MODELS_DIR="$STATE_DIR/models"
 
 # ── Helpers ───────────────────────────────────────────────
 die() {
@@ -25,7 +26,8 @@ Commands:
   opencode  Start opencode (sandboxed)
 
 llama options:
-  --model PATH          Path to GGUF model file (required, or set MODEL env var)
+  --model SPEC          Local path or HF ref (org/repo:file.gguf)
+                        Omit filename to list available GGUF files
   --ctx-size N          Context size (default: 32768)
   --temp N              Temperature (default: 0.6)
   --top-p N             Top-p / nucleus sampling (default: 0.95)
@@ -39,16 +41,68 @@ opencode options:
   Additional args are passed through to opencode.
 
 Environment:
-  MODEL             GGUF model path (overridden by --model)
+  MODEL             Model spec (overridden by --model)
   LLAMA_SERVER      Explicit path to llama-server binary (non-Nix fallback)
 EOF
   exit 1
 }
 
-# Derive a model alias from the GGUF file path.
-# Uses the parent directory name (e.g. .../Qwen3.5-35B-A3B-GGUF/foo.gguf -> Qwen3.5-35B-A3B-GGUF)
-model_alias() {
-  basename "$(dirname "$1")"
+# Resolve a model spec to a local GGUF file path.
+# Accepts:
+#   /path/to/model.gguf   → local file, used directly
+#   org/repo:file.gguf     → downloaded from Hugging Face if not cached
+#   org/repo               → lists available GGUF files in the repo
+resolve_model() {
+  local spec="$1"
+
+  # Local file path
+  if [[ -f "$spec" ]]; then
+    printf '%s' "$(cd "$(dirname "$spec")" && pwd)/$(basename "$spec")"
+    return
+  fi
+
+  # HF reference
+  if [[ "$spec" == */* && "$spec" != /* ]]; then
+    if [[ "$spec" == *:* ]]; then
+      local repo="${spec%%:*}"
+      local file="${spec#*:}"
+      local target="$MODELS_DIR/$repo/$file"
+
+      if [[ -f "$target" ]]; then
+        printf '%s' "$target"
+        return
+      fi
+
+      info "download:" "https://huggingface.co/$repo → $file"
+      mkdir -p "$(dirname "$target")"
+      curl -L -C - --progress-bar \
+        -o "$target" \
+        "https://huggingface.co/$repo/resolve/main/$file" \
+        || die "failed to download $repo/$file"
+
+      printf '%s' "$target"
+      return
+    else
+      info "fetching:" "file list for $spec"
+      local files
+      files="$(curl -sf "https://huggingface.co/api/models/$spec" \
+        | grep -o '"rfilename":"[^"]*\.gguf"' \
+        | sed 's/"rfilename":"//;s/"//' \
+        | sort)" \
+        || die "failed to fetch file list for $spec"
+
+      if [[ -z "$files" ]]; then
+        die "no GGUF files found in $spec"
+      fi
+
+      printf 'Available GGUF files in %s:\n' "$spec" >&2
+      printf '  %s\n' $files >&2
+      printf '\nUse: --model %s:<filename>\n' "$spec" >&2
+      exit 1
+    fi
+  fi
+
+  die "model not found: $spec (use a local path or org/repo:file.gguf)"
 }
 
 # Locate the llama-server binary.
@@ -164,17 +218,19 @@ cmd_llama() {
     esac
   done
 
-  [[ -n "${MODEL:-}" ]] || die "no model specified — use --model PATH or set MODEL env var"
-  [[ -f "$MODEL" ]] || die "model not found: $MODEL"
+  [[ -n "${MODEL:-}" ]] || die "no model specified — use --model or set MODEL env var"
+
+  local model_path
+  model_path="$(resolve_model "$MODEL")"
 
   local llama_server
   llama_server="$(resolve_llama_server)"
 
   local model_dir
-  model_dir="$(dirname "$MODEL")"
+  model_dir="$(dirname "$model_path")"
 
   local alias
-  alias="$(model_alias "$MODEL")"
+  alias="$(basename "$model_dir")"
 
   mkdir -p "$CACHE_DIR" "$TMPDIR"
   export TMPDIR
@@ -182,13 +238,16 @@ cmd_llama() {
 
   printf 'Starting llama-server:\n'
   info "binary:" "$llama_server"
-  info "model:" "$MODEL"
+  info "model:" "$model_path"
   info "alias:" "$alias"
   info "ctx-size:" "$ctx_size"
   info "sampling:" "temp=$temp top_p=$top_p top_k=$top_k min_p=$min_p"
   info "cache-dir:" "$CACHE_DIR"
   info "port:" "$PORT"
   printf '\n'
+
+  # cd to an allowed dir so llama-server's getcwd() succeeds inside the sandbox
+  cd "$CACHE_DIR"
 
   exec sandbox-exec \
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
@@ -198,7 +257,7 @@ cmd_llama() {
     -D TMPDIR="$TMPDIR" \
     -f "$SCRIPT_DIR/llama-server.sb" \
     "$llama_server" \
-    --model "$MODEL" \
+    --model "$model_path" \
     --ctx-size "$ctx_size" \
     --temp "$temp" \
     --top-p "$top_p" \
