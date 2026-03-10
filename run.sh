@@ -317,7 +317,9 @@ cmd_opencode() {
 
 cmd_llm() {
   export LLM_USER_PATH="$STATE_DIR/llm"
-  mkdir -p "$LLM_USER_PATH"
+  export OPENAI_API_KEY="${OPENAI_API_KEY:-dummy}"
+  mkdir -p "$LLM_USER_PATH" "$TMPDIR"
+  export TMPDIR
 
   local llm_bin
   llm_bin="$(resolve_binary "${LLM:-}" "llm")"
@@ -339,8 +341,9 @@ cmd_llm() {
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
     -D PKG_STORE="$(pkg_store_for "$llm_bin")" \
     -D LLM_USER_PATH="$LLM_USER_PATH" \
+    -D TMPDIR="$TMPDIR" \
     -f "$SCRIPT_DIR/llm.sb" \
-    "$llm_bin" "${model_args[@]}" "$@"
+    "$llm_bin" "${model_args[@]}" --no-log "$@"
 }
 
 # ── Main ──────────────────────────────────────────────────

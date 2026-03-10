@@ -16,9 +16,20 @@
 
 ;; ── LLM state ──────────────────────────────────────────
 (allow file-read* file-write*
-  (subpath (param "LLM_USER_PATH")))
+  (subpath (param "LLM_USER_PATH"))
+  (subpath (param "TMPDIR")))
 
 ;; ── Network: localhost llama-server only ──────────────────
+(allow user-preference-read)
+(allow file-read-metadata
+  (subpath "/etc")
+  (subpath "/private/etc"))
+(allow file-read*
+  (literal "/private/etc/hosts")
+  (subpath "/private/etc/ssl")
+  (subpath "/etc/ssl"))
+(allow mach-lookup
+  (global-name "com.apple.SystemConfiguration.configd"))
 (allow network-outbound
   (remote tcp "localhost:8080"))
 

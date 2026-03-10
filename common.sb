@@ -46,6 +46,13 @@
   (subpath "/private/var/folders")
 )
 
+;; ── Path traversal (stat on parent directories) ─────────
+;; SQLite and other tools need to stat() ancestor directories
+;; when resolving absolute paths. This only allows metadata
+;; (directory existence checks), not reading file contents.
+(allow file-read-metadata
+  (subpath "/Users"))
+
 ;; ── Logging ──────────────────────────────────────────────
 (allow file-write*
   (literal "/dev/stdout")
