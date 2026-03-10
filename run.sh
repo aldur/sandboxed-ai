@@ -73,7 +73,7 @@ resolve_model() {
         return
       fi
 
-      info "download:" "https://huggingface.co/$repo → $file"
+      info "download:" "https://huggingface.co/$repo → $file" >&2
       mkdir -p "$(dirname "$target")"
       curl -L -C - --progress-bar \
         -o "$target" \
@@ -83,7 +83,7 @@ resolve_model() {
       printf '%s' "$target"
       return
     else
-      info "fetching:" "file list for $spec"
+      info "fetching:" "file list for $spec" >&2
       local files
       files="$(curl -sf "https://huggingface.co/api/models/$spec" |
         grep -o '"rfilename":"[^"]*\.gguf"' |
