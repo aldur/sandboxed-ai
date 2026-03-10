@@ -1,27 +1,23 @@
+; vim:ft=scheme
 (version 1)
-
 (deny default)
-(import "system.sb")
-(import "com.apple.corefoundation.sb")
 
-;; ── Process ───────────────────────────────────────────────
+;; llama-server sandbox
+(import (param "COMMON_SB"))
+
+;; ── Process ──────────────────────────────────────────────
 (allow process-exec
-  (subpath (param "LLAMA_DIR")); llama-b8234/ only
-)
+  (literal (param "LLAMA_SERVER")))
 
 (deny process-fork)
-(allow signal (target self))
-(allow process-info-pidinfo)
 
-;; ── Mach ──────────────────────────────────────────────────
+;; ── Mach (GPU) ───────────────────────────────────────────
 (allow mach-lookup
-  (global-name "com.apple.system.opendirectoryd.membership")
   (global-name "com.apple.gpumemd.shared")
   (global-name "com.apple.metal.shared")
-  (global-name "com.apple.GPUCompiler.daemon")
-)
+  (global-name "com.apple.GPUCompiler.daemon"))
 
-;; ── IOKit: GPU + ANE ──────────────────────────────────────
+;; ── IOKit: GPU + ANE ─────────────────────────────────────
 (allow iokit-open
   (iokit-user-client-class "AGXDeviceUserClient")
   (iokit-user-client-class "AGXCommandQueueUserClient")
@@ -30,8 +26,7 @@
   (iokit-user-client-class "AppleH11ANEUserClientV2")
   (iokit-user-client-class "ANEUserClient")
   (iokit-user-client-class "IOAcceleratorClient")
-  (iokit-user-client-class "IOGPUDeviceUserClient")
-)
+  (iokit-user-client-class "IOGPUDeviceUserClient"))
 
 (allow iokit-get-properties
   (iokit-property "gpu-core-count")
@@ -39,54 +34,27 @@
   (iokit-property "MetalPluginClassName")
   (iokit-property "model"))
 
-;; ── Sysctl ────────────────────────────────────────────────
+;; ── Sysctl (hardware topology for thread scheduling) ─────
 (allow sysctl-read
-  (sysctl-name "hw.ncpu")
   (sysctl-name "hw.physicalcpu")
-  (sysctl-name "hw.memsize")
-  (sysctl-name "hw.pagesize")
   (sysctl-name-prefix "hw.optional.")
-  (sysctl-name "kern.osrelease")
-  (sysctl-name "kern.osversion")
   (sysctl-name "hw.nperflevels")
-  (sysctl-name-prefix "hw.perflevel")
-)
+  (sysctl-name-prefix "hw.perflevel"))
 
-;; ── Filesystem: system ────────────────────────────────────
+;; ── Filesystem ───────────────────────────────────────────
+;; GPU shader bundles
 (allow file-read*
-  (subpath "/usr/lib")
-  (subpath "/System/Library/Frameworks")
-  (subpath "/System/Library/PrivateFrameworks")
-  (subpath "/System/Library/Caches/com.apple.dyld")
   (subpath "/Library/GPUBundles")
-  (subpath "/System/Library/GPUBundles")
-  (subpath "/Library/Apple/usr/lib")
-  (literal "/dev/null")
-  (literal "/dev/zero")
-  (literal "/dev/random")
-  (literal "/dev/urandom"))
-
-;; llama binaries + dylibs (read + executable mapping)
-(allow file-read* file-map-executable
-  (subpath (param "LLAMA_DIR")))
+  (subpath "/System/Library/GPUBundles"))
 
 ;; Model weights (read-only)
 (allow file-read*
   (subpath (param "MODEL_DIR")))
 
-;; cwd
-(allow file-read*
-  (subpath (param "SCRIPT_DIR")))
-
-;; Metal shader / PSO cache
+;; Metal shader / PSO cache + local temp
 (allow file-read* file-write* file-lock
-  (subpath (param "CACHE_DIR")))
-
-;; Temp (Metal compilation staging)
-(allow file-read* file-write* file-map-executable file-lock
-  (subpath "/private/tmp")
-  (subpath "/private/var/tmp")
-  (subpath "/private/var/folders"))
+  (subpath (param "CACHE_DIR"))
+  (subpath (param "TMPDIR")))
 
 ;; ── Shared memory (Metal command buffers) ────────────────
 (allow ipc-posix-shm-read-data
@@ -96,16 +64,8 @@
   (ipc-posix-name-prefix "com.apple.GPUCompiler")
   (ipc-posix-name-prefix "com.apple.ane"))
 
-;; ── Network: localhost only, no outbound ─────────────────
-(allow network-bind
-  (local tcp "localhost:8080"))
-
-(allow network-inbound
-  (local tcp "localhost:8080"))
+;; ── Network: localhost only, port configured via run.sh ──
+(allow network-bind network-inbound
+  (local tcp "localhost:*"))
 
 (deny network-outbound (with send-signal SIGKILL))
-
-;; ── Logging ───────────────────────────────────────────────
-(allow file-write*
-  (literal "/dev/stdout")
-  (literal "/dev/stderr"))

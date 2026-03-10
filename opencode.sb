@@ -1,115 +1,72 @@
+; vim:ft=scheme
 (version 1)
 (deny default)
 
-(import "system.sb")
-(import "com.apple.corefoundation.sb")
+;; opencode sandbox
+(import (param "COMMON_SB"))
 
-;; ── Process ───────────────────────────────────────────────
+;; ── Process ──────────────────────────────────────────────
 ;; Nix store contains all binaries opencode will ever need.
-;; Nothing outside /nix/store should need to exec.
 (allow process-exec
   (subpath "/nix/store")
   (subpath "/nix/var")
-  ;; macOS linker + locale tools that Nix shells may invoke
   (literal "/usr/bin/env")
   (literal "/usr/bin/git")
   (literal "/usr/bin/xcode-select")
   (literal "/bin/bash")
   (literal "/bin/zsh")
-  (literal "/bin/sh")
-)
+  (literal "/bin/sh"))
 
-;; DNS resolution (needed for localhost lookup)
+(allow process-fork)
+(allow process-info-setcontrol)
+
+;; ── DNS resolution (localhost lookup) ────────────────────
 (allow network-outbound
   (path "/private/var/run/mDNSResponder"))
 
-;; Network config + TLS
+;; ── Network config + TLS ─────────────────────────────────
 (allow file-read*
   (literal "/private/etc/ssl/cert.pem")
   (literal "/private/etc/hosts")
   (literal "/Library/Preferences/com.apple.networkd.plist"))
 
-;; ── OpenCode state (redirected to cwd via XDG vars) ──────
+;; ── OpenCode state (XDG dirs) ────────────────────────────
 (allow file-read* file-write*
   (subpath (param "OPENCODE_DIR")))
 
-(allow process-fork)
-(allow signal (target self))
-(allow process-info-pidinfo)
-(allow process-info-setcontrol)
-
-;; xcode-select (git toolchain detection)
+;; ── xcode-select (git toolchain detection) ───────────────
 (allow file-read* file-read-metadata
   (literal "/private/var/select/developer_dir")
   (subpath "/Library/Developer/CommandLineTools")
   (subpath "/Applications/Xcode.app/Contents/Developer"))
 
-;; ── Mach (IPC) ────────────────────────────────────────────
+;; ── Mach (IPC) ───────────────────────────────────────────
 (allow mach-lookup
-  ;; dyld + CF fundamentals
-  (global-name "com.apple.system.opendirectoryd.membership")
   (global-name "com.apple.CoreServices.coreservicesd")
   (global-name "com.apple.SystemConfiguration.configd")
   ;; Terminal / TUI rawmode
   (global-name "com.apple.iohideventsystem")
-  (global-name "com.apple.windowserver.active")
-)
+  (global-name "com.apple.windowserver.active"))
 
-;; ── IOKit ─────────────────────────────────────────────────
-;; Terminal keyboard input for TUI
+;; ── IOKit (terminal keyboard input) ──────────────────────
 (allow iokit-open
   (iokit-user-client-class "IOHIDLibUserClient")
   (iokit-user-client-class "IOHIDEventSystemUserClient"))
 
-;; ── Sysctl (read-only) ────────────────────────────────────
+;; ── Sysctl ───────────────────────────────────────────────
 (allow sysctl-read
-  (sysctl-name "hw.ncpu")
-  (sysctl-name "hw.memsize")
-  (sysctl-name "hw.pagesize")
-  (sysctl-name "kern.osrelease")
-  (sysctl-name "kern.osversion")
   (sysctl-name "kern.maxfilesperproc"))
 
 (allow sysctl-write
   (sysctl-name "kern.maxfilesperproc"))
 
-;; ── Nix store (read + executable mapping) ────────────────
-;; The entire closure lives here. Read-only — store is immutable.
-(allow file-read* file-map-executable
-  (subpath "/nix/store")
-  (subpath "/nix/var"))
-
-;; ── System libs (dyld, macOS frameworks Nix pkgs link against) ──
-(allow file-read*
-  (subpath "/usr/lib")
-  (subpath "/System/Library/Frameworks")
-  (subpath "/System/Library/PrivateFrameworks")
-  (subpath "/System/Library/Caches/com.apple.dyld")
-  (subpath "/Library/Apple/usr/lib")
-  ;; Locale + timezone
-  (subpath "/usr/share/locale")
-  (subpath "/private/var/db/timezone")
-  ;; Devices
-  (literal "/dev/null")
-  (literal "/dev/zero")
-  (literal "/dev/random")
-  (literal "/dev/urandom"))
-
-;; ── TTY (TUI rawmode — scoped, not all of /dev) ───────────
+;; ── TTY (TUI rawmode) ────────────────────────────────────
 (allow file-read* file-write* file-ioctl
   (subpath "/dev/tty")
   (subpath "/dev/pty")
   (regex #"^/dev/ttys[0-9]+$"))
 
-;; ── Temp / Nix build scratch ──────────────────────────────
-;; Nix may extract or compile things here at runtime
-(allow file-read* file-write* file-map-executable file-lock
-  (subpath "/private/tmp")
-  (subpath "/private/var/tmp")
-  (subpath "/private/var/folders"))  ; NSTemporaryDirectory
-
-;; ── OpenCode XDG state dirs ───────────────────────────────
-;; Git identity (read-only — agent reads but shouldn't change global config)
+;; ── Git identity (read-only) ─────────────────────────────
 (allow file-read*
   (literal (param "GITCONFIG"))
   (literal (param "GIT_CONFIG_ALT"))
@@ -119,7 +76,7 @@
 (allow file-read* file-write*
   (subpath (param "WORKSPACE")))
 
-;; ── Shared memory + semaphores ────────────────────────────
+;; ── Shared memory + semaphores ───────────────────────────
 (allow ipc-posix-shm-read-data ipc-posix-shm-write-data ipc-posix-shm-write-create
   (ipc-posix-name-prefix "com.apple."))
 
@@ -128,14 +85,10 @@
        ipc-posix-sem-wait)
 
 ;; ── Network: localhost llama-server only ──────────────────
-;; llama-server on localhost — change LLAMA_PORT if needed
 (allow network-outbound
-  (remote tcp "localhost:8080"))
+  (remote tcp "localhost:*"))
 
-(allow network-bind network-inbound
-  (local tcp "localhost:4096"))
-
-;; ── Logging ───────────────────────────────────────────────
-(allow file-write*
-  (literal "/dev/stdout")
-  (literal "/dev/stderr"))
+;; ── System libs (locale + timezone + devices) ────────────
+(allow file-read*
+  (subpath "/usr/share/locale")
+  (subpath "/private/var/db/timezone"))
