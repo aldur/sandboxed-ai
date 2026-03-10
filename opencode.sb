@@ -11,8 +11,6 @@
   (subpath "/nix/store")
   (subpath "/nix/var")
   (literal "/usr/bin/env")
-  (literal "/usr/bin/git")
-  (literal "/usr/bin/xcode-select")
   (literal "/bin/bash")
   (literal "/bin/zsh")
   (literal "/bin/sh"))
@@ -58,12 +56,6 @@
   (subpath "/dev/tty")
   (subpath "/dev/pty")
   (regex #"^/dev/ttys[0-9]+$"))
-
-;; ── Git identity (read-only) ─────────────────────────────
-(allow file-read*
-  (literal (param "GITCONFIG"))
-  (literal (param "GIT_CONFIG_ALT"))
-)
 
 ;; ── Workspace: full read + write ─────────────────────────
 (allow file-read* file-write*

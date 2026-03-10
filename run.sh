@@ -300,8 +300,6 @@ cmd_opencode() {
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
     -D WORKSPACE="$workspace" \
     -D OPENCODE_DIR="$STATE_DIR" \
-    -D GITCONFIG="$HOME/.gitconfig" \
-    -D GIT_CONFIG_ALT="$HOME/.config/git/config" \
     -f "$SCRIPT_DIR/opencode.sb" \
     opencode "$@"
 }
