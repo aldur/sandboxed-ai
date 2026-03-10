@@ -31,16 +31,19 @@
           ${old.preConfigure or ""}
         '';
       });
+
+      llm = pkgs.llm.withPlugins { llm-llama-server = true; };
     in
     {
       packages.${system} = {
-        inherit llama-cpp;
+        inherit llama-cpp llm;
         default = llama-cpp;
       };
 
       devShells.${system}.default = pkgs.mkShell {
         packages = [
           llama-cpp
+          llm
           pkgs.opencode
         ];
       };

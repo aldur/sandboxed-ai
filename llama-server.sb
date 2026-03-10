@@ -7,7 +7,10 @@
 
 ;; ── Process ──────────────────────────────────────────────
 (allow process-exec
-  (literal (param "LLAMA_SERVER")))
+  (literal (param "LLAMA_SERVER"))
+  ;; Metal shader compiler (metalfe) lives in system frameworks
+  (subpath "/System/Library/Frameworks/Metal.framework")
+  (subpath "/System/Library/PrivateFrameworks"))
 
 (deny process-fork)
 

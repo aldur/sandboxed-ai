@@ -24,6 +24,7 @@ Usage: $(basename "$0") <command> [options]
 Commands:
   llama     Start the llama-server (sandboxed)
   opencode  Start opencode (sandboxed)
+  llm       Run llm CLI (uses local llama-server)
 
 llama options:
   --model SPEC          Local path or HF ref (org/repo:file.gguf)
@@ -306,6 +307,23 @@ cmd_opencode() {
     opencode "$@"
 }
 
+cmd_llm() {
+  export LLM_USER_PATH="$STATE_DIR/llm"
+  mkdir -p "$LLM_USER_PATH"
+
+  # Default to llama-server model if no -m flag given
+  local has_model=false
+  for arg in "$@"; do
+    [[ "$arg" == "-m" || "$arg" == "--model" ]] && has_model=true
+  done
+
+  if [[ "$has_model" == false ]]; then
+    exec llm -m llama-server "$@"
+  else
+    exec llm "$@"
+  fi
+}
+
 # ── Main ──────────────────────────────────────────────────
 [[ $# -ge 1 ]] || usage
 
@@ -314,6 +332,7 @@ shift
 case "$cmd" in
 llama) cmd_llama "$@" ;;
 opencode) cmd_opencode "$@" ;;
+llm) cmd_llm "$@" ;;
 -h | --help | help) usage ;;
 *) die "unknown command: $cmd" ;;
 esac
