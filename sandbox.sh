@@ -68,16 +68,39 @@ resolve_model() {
       local target="$MODELS_DIR/$repo/$file"
 
       if [[ -f "$target" ]]; then
-        printf '%s' "$target"
-        return
+        local magic
+        magic="$(head -c 4 "$target")" || true
+        if [[ "$magic" != "GGUF" ]]; then
+          rm -f "$target"
+          info "removed:" "invalid cached file, re-downloading" >&2
+        else
+          printf '%s' "$target"
+          return
+        fi
       fi
+
+      # Check the file exists on HF before downloading
+      local url="https://huggingface.co/$repo/resolve/main/$file"
+      local http_code
+      http_code="$(curl -sfI -o /dev/null -w '%{http_code}' "$url")" \
+        || http_code="000"
+      [[ "$http_code" == 200 || "$http_code" == 302 ]] \
+        || die "file not found on HF (HTTP $http_code): $repo/$file"
 
       info "download:" "https://huggingface.co/$repo → $file" >&2
       mkdir -p "$(dirname "$target")"
       curl -L -C - --progress-bar \
         -o "$target" \
-        "https://huggingface.co/$repo/resolve/main/$file" ||
+        "$url" ||
         die "failed to download $repo/$file"
+
+      # Verify GGUF magic bytes
+      local magic
+      magic="$(head -c 4 "$target")" || true
+      if [[ "$magic" != "GGUF" ]]; then
+        rm -f "$target"
+        die "downloaded file is not a valid GGUF: $repo/$file"
+      fi
 
       printf '%s' "$target"
       return
