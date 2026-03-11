@@ -1,5 +1,5 @@
 ; vim:ft=scheme
-;; common.sb — shared sandbox rules, imported by llama-server.sb and opencode.sb
+;; common.sb — shared sandbox rules, imported by llama-server.sb, opencode.sb, and llm.sb
 
 (import "system.sb")
 (import "com.apple.corefoundation.sb")
@@ -33,7 +33,7 @@
   (literal "/dev/urandom"))
 
 ;; ── Package store (read + executable mapping) ───────────
-;; Set by run.sh: /nix for Nix, /opt/homebrew for Homebrew.
+;; Set by sandbox.sh: /nix for Nix, /opt/homebrew for Homebrew.
 (allow file-read* file-map-executable
   (subpath (param "PKG_STORE")))
 

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -22,23 +22,22 @@ usage() {
 Usage: $(basename "$0") <command> [options]
 
 Commands:
-  llama     Start the llama-server (sandboxed)
+  llama-server  Start the llama-server (sandboxed)
   opencode  Start opencode (sandboxed)
-  llm       Run llm CLI (uses local llama-server)
+  llm           Run llm CLI (sandboxed, uses local llama-server)
 
-llama options:
+llama-server options:
   --model SPEC          Local path or HF ref (org/repo:file.gguf)
                         Omit filename to list available GGUF files
-  --ctx-size N          Context size (default: 32768)
-  --temp N              Temperature (default: 0.6)
-  --top-p N             Top-p / nucleus sampling (default: 0.95)
-  --top-k N             Top-k sampling (default: 20)
-  --min-p N             Min-p sampling (default: 0)
-  --presence-penalty N  Presence penalty (default: 0)
+  All other flags are passed through to llama-server.
 
 opencode options:
   -w, --workspace DIR   Workspace directory (default: script dir)
   Additional args are passed through to opencode.
+
+llm options:
+  -m, --model MODEL     Model name (default: llama-server)
+  Additional args are passed through to llm.
 
 Environment:
   MODEL             Model spec (overridden by --model)
@@ -184,44 +183,18 @@ EOF
 
 # ── Subcommands ───────────────────────────────────────────
 cmd_llama() {
-  local ctx_size=32768
-  local temp=0.6
-  local top_p=0.95
-  local top_k=20
-  local min_p=0
-  local presence_penalty=0
-
+  # Extract --model, pass everything else through to llama-server
+  local extra_args=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
     --model)
       MODEL="$2"
       shift 2
       ;;
-    --ctx-size)
-      ctx_size="$2"
-      shift 2
+    *)
+      extra_args+=("$1")
+      shift
       ;;
-    --temp | --temperature)
-      temp="$2"
-      shift 2
-      ;;
-    --top-p)
-      top_p="$2"
-      shift 2
-      ;;
-    --top-k)
-      top_k="$2"
-      shift 2
-      ;;
-    --min-p)
-      min_p="$2"
-      shift 2
-      ;;
-    --presence-penalty)
-      presence_penalty="$2"
-      shift 2
-      ;;
-    *) die "unknown llama option: $1" ;;
     esac
   done
 
@@ -247,10 +220,8 @@ cmd_llama() {
   info "binary:" "$llama_server"
   info "model:" "$model_path"
   info "alias:" "$alias"
-  info "ctx-size:" "$ctx_size"
-  info "sampling:" "temp=$temp top_p=$top_p top_k=$top_k min_p=$min_p"
-  info "cache-dir:" "$CACHE_DIR"
   info "port:" "$PORT"
+  info "extra:" "${extra_args[*]:-none}"
   printf '\n'
 
   # cd to an allowed dir so llama-server's getcwd() succeeds inside the sandbox
@@ -266,14 +237,9 @@ cmd_llama() {
     -f "$SCRIPT_DIR/llama-server.sb" \
     "$llama_server" \
     --model "$model_path" \
-    --ctx-size "$ctx_size" \
-    --temp "$temp" \
-    --top-p "$top_p" \
-    --top-k "$top_k" \
-    --min-p "$min_p" \
-    --presence_penalty "$presence_penalty" \
     --alias "$alias" \
-    --port "$PORT"
+    --port "$PORT" \
+    "${extra_args[@]}"
 }
 
 cmd_opencode() {
@@ -305,6 +271,9 @@ cmd_opencode() {
   opencode_bin="$(resolve_binary "${OPENCODE:-}" "opencode")"
 
   ulimit -n 2147483646
+
+  # cd to an allowed dir so opencode's getcwd() succeeds inside the sandbox
+  cd "$workspace"
 
   exec sandbox-exec \
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
@@ -343,7 +312,7 @@ cmd_llm() {
     -D LLM_USER_PATH="$LLM_USER_PATH" \
     -D TMPDIR="$TMPDIR" \
     -f "$SCRIPT_DIR/llm.sb" \
-    "$llm_bin" "${model_args[@]}" --no-log "$@"
+    "$llm_bin" "${model_args[@]}" "$@"
 }
 
 # ── Main ──────────────────────────────────────────────────
@@ -352,7 +321,7 @@ cmd_llm() {
 cmd="$1"
 shift
 case "$cmd" in
-llama) cmd_llama "$@" ;;
+llama-server) cmd_llama "$@" ;;
 opencode) cmd_opencode "$@" ;;
 llm) cmd_llm "$@" ;;
 -h | --help | help) usage ;;
