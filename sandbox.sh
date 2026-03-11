@@ -71,6 +71,7 @@ resolve_model() {
         local magic
         magic="$(head -c 4 "$target")" || true
         if [[ "$magic" != "GGUF" ]]; then
+          # NOTE: Not smart enough to detect truncated downloads.
           rm -f "$target"
           info "removed:" "invalid cached file, re-downloading" >&2
         else
@@ -82,10 +83,10 @@ resolve_model() {
       # Check the file exists on HF before downloading
       local url="https://huggingface.co/$repo/resolve/main/$file"
       local http_code
-      http_code="$(curl -sfI -o /dev/null -w '%{http_code}' "$url")" \
-        || http_code="000"
-      [[ "$http_code" == 200 || "$http_code" == 302 ]] \
-        || die "file not found on HF (HTTP $http_code): $repo/$file"
+      http_code="$(curl -sfI -o /dev/null -w '%{http_code}' "$url")" ||
+        http_code="000"
+      [[ "$http_code" == 200 || "$http_code" == 302 ]] ||
+        die "file not found on HF (HTTP $http_code): $repo/$file"
 
       info "download:" "https://huggingface.co/$repo → $file" >&2
       mkdir -p "$(dirname "$target")"
@@ -239,7 +240,7 @@ cmd_llama() {
   export TMPDIR
   write_llama_state "$alias"
 
-  printf 'Starting llama-server:\n'
+  printf 'Starting sandboxed llama-server:\n'
   info "binary:" "$llama_server"
   info "model:" "$model_path"
   info "alias:" "$alias"
@@ -313,19 +314,11 @@ cmd_llm() {
   mkdir -p "$LLM_USER_PATH" "$TMPDIR"
   export TMPDIR
 
+  # Default to llama-server model if no -m flag given
+  echo "llama-server" >$LLM_USER_PATH/default_model.txt
+
   local llm_bin
   llm_bin="$(resolve_binary "${LLM:-}" "llm")"
-
-  # Default to llama-server model if no -m flag given
-  local has_model=false
-  for arg in "$@"; do
-    [[ "$arg" == "-m" || "$arg" == "--model" ]] && has_model=true
-  done
-
-  local model_args=()
-  if [[ "$has_model" == false ]]; then
-    model_args=(-m llama-server)
-  fi
 
   cd "$LLM_USER_PATH"
 
