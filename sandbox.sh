@@ -8,7 +8,7 @@ PORT=8080
 STATE_DIR="$SCRIPT_DIR/.opencode"
 CACHE_DIR="$STATE_DIR/cache"
 TMPDIR="$STATE_DIR/tmp"
-MODELS_DIR="$STATE_DIR/models"
+MODELS_DIR="$SCRIPT_DIR/models"
 
 # ── Helpers ───────────────────────────────────────────────
 die() {
@@ -24,7 +24,7 @@ Usage: $(basename "$0") <command> [options]
 Commands:
   llama-server  Start the llama-server (sandboxed)
   opencode  Start opencode (sandboxed)
-  llm           Run llm CLI (sandboxed, uses local llama-server)
+  llm           Run llm CLI (sandboxed)
 
 llama-server options:
   --model SPEC          Local path or HF ref (org/repo:file.gguf)
@@ -155,7 +155,10 @@ pkg_store_for() {
   case "$bin" in
   /nix/*) printf '/nix' ;;
   /opt/homebrew/*) printf '/opt/homebrew' ;;
-  *) die "cannot determine package store for: $bin" ;;
+  *)
+    echo "cannot determine package store for: $bin" >&2
+    printf ""
+    ;;
   esac
 }
 
