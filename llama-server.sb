@@ -76,8 +76,15 @@
   (ipc-posix-name-prefix "com.apple.GPUCompiler")
   (ipc-posix-name-prefix "com.apple.ane"))
 
-;; ── Network: localhost only, port 8080 ──────────────────
-(allow network-bind network-inbound
-  (local tcp "localhost:8080"))
+;; ── Network ──────────────────────────────────────────────
+;; Bind any interface (llama-server runs with --host 0.0.0.0), but only
+;; accept connections whose local endpoint is loopback (host clients) or
+;; the Apple-containers vmnet gateway (containers). Other interfaces stay
+;; closed, so binding broadly doesn't widen the actual exposure.
+(allow network-bind
+  (local tcp (param "BIND_ADDR")))
+(allow network-inbound
+  (local tcp (param "LOOPBACK_ADDR"))
+  (local tcp (param "GATEWAY_ADDR")))
 
 (deny network-outbound (with send-signal SIGKILL))
