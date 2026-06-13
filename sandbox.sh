@@ -27,8 +27,9 @@ Commands:
   llm           Run llm CLI (sandboxed)
 
 llama-server options:
-  --model SPEC          Local path or HF ref (org/repo:file.gguf)
-                        Omit filename to list available GGUF files
+  --model SPEC          Local path, HF file (org/repo:file.gguf), or
+                        HF quant (org/repo:Q4_K_M). Omit the part after ':'
+                        to list available GGUF files.
   All other flags are passed through to llama-server.
 
 opencode options:
@@ -46,11 +47,133 @@ EOF
   exit 1
 }
 
-# Resolve a model spec to a local GGUF file path.
+# Strip a GGUF split suffix (-00001-of-00003.gguf) or a plain .gguf extension,
+# yielding a key shared by every shard of one quant.
+strip_shard() {
+  local f="$1"
+  if [[ "$f" =~ ^(.*)-[0-9]+-of-[0-9]+\.gguf$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  else
+    printf '%s' "${f%.gguf}"
+  fi
+}
+
+# Choose the GGUF file(s) for a selection within a repo's listing.
+# Prints the chosen rfilename(s), newline-separated, to stdout.
+# On a missing or ambiguous selection, explains on stderr and returns 1.
+#   $1 repo, $2 selection (file.gguf or QUANT), remaining args: GGUF rfilenames
+select_gguf_files() {
+  local repo="$1" sel="$2"
+  shift 2
+  local -a all=("$@")
+  local -a want=()
+  local f
+
+  if [[ "$sel" == *.gguf ]]; then
+    # Explicit filename: pull in sibling shards if it is part of a split set.
+    local key
+    key="$(strip_shard "$sel")"
+    for f in "${all[@]}"; do
+      [[ "$(strip_shard "$f")" == "$key" ]] && want+=("$f")
+    done
+    # Trust the literal name if the listing did not surface it.
+    [[ ${#want[@]} -gt 0 ]] || want=("$sel")
+  else
+    # Quant label: case-insensitive substring match against the listing.
+    [[ ${#all[@]} -gt 0 ]] || {
+      printf "error: cannot resolve quant '%s': no GGUF listing for %s\n" "$sel" "$repo" >&2
+      return 1
+    }
+
+    local sel_lc="${sel,,}"
+    local -a matches=()
+    for f in "${all[@]}"; do
+      local base="${f##*/}"
+      [[ "${base,,}" == *"$sel_lc"* ]] && matches+=("$f")
+    done
+    [[ ${#matches[@]} -gt 0 ]] || {
+      printf "error: no GGUF matching quant '%s' in %s. Available:\n" "$sel" "$repo" >&2
+      printf '%s\n' "${all[@]}" | LC_ALL=C sort | sed 's/^/  /' >&2
+      return 1
+    }
+
+    # Collapse shards: group matches by quant key.
+    local -A keyset=()
+    for f in "${matches[@]}"; do keyset["$(strip_shard "$f")"]=1; done
+
+    local chosen=""
+    if [[ ${#keyset[@]} -eq 1 ]]; then
+      for chosen in "${!keyset[@]}"; do :; done
+    else
+      # Tie-break: prefer the single quant whose name ends with the label
+      # (e.g. 'Q6_K' over 'Q6_K_XL').
+      local k
+      local -a ends=()
+      for k in "${!keyset[@]}"; do
+        local kb="${k##*/}"
+        [[ "${kb,,}" == *"$sel_lc" ]] && ends+=("$k")
+      done
+      if [[ ${#ends[@]} -eq 1 ]]; then
+        chosen="${ends[0]}"
+      else
+        printf "error: quant '%s' is ambiguous in %s; matches:\n" "$sel" "$repo" >&2
+        printf '%s\n' "${!keyset[@]}" | sed 's#.*/##' | LC_ALL=C sort | sed 's/^/  /' >&2
+        printf 'specify a more precise quant or the full filename.\n' >&2
+        return 1
+      fi
+    fi
+
+    for f in "${matches[@]}"; do
+      [[ "$(strip_shard "$f")" == "$chosen" ]] && want+=("$f")
+    done
+  fi
+
+  printf '%s\n' "${want[@]}" | LC_ALL=C sort
+}
+
+# Download a single GGUF file from HF into target (resumable), verifying its
+# magic bytes. Reuses a valid cached copy. All output goes to stderr.
+hf_download() {
+  local repo="$1" file="$2" target="$3"
+  local magic
+
+  if [[ -f "$target" ]]; then
+    # NOTE: Not smart enough to detect truncated downloads.
+    magic="$(head -c 4 "$target")" || true
+    if [[ "$magic" == "GGUF" ]]; then
+      info "cached:" "$file" >&2
+      return
+    fi
+    rm -f "$target"
+    info "removed:" "invalid cached file, re-downloading" >&2
+  fi
+
+  local url="https://huggingface.co/$repo/resolve/main/$file"
+  local http_code
+  http_code="$(curl -sfI -o /dev/null -w '%{http_code}' "$url")" || http_code="000"
+  [[ "$http_code" == 200 || "$http_code" == 302 ]] ||
+    die "file not found on HF (HTTP $http_code): $repo/$file"
+
+  info "download:" "$file" >&2
+  mkdir -p "$(dirname "$target")"
+  curl -L -C - --progress-bar -o "$target" "$url" ||
+    die "failed to download $repo/$file"
+
+  magic="$(head -c 4 "$target")" || true
+  [[ "$magic" == "GGUF" ]] || {
+    rm -f "$target"
+    die "downloaded file is not a valid GGUF: $repo/$file"
+  }
+}
+
+# Resolve a model spec to a local GGUF file path, downloading from HF as needed.
 # Accepts:
-#   /path/to/model.gguf   → local file, used directly
-#   org/repo:file.gguf     → downloaded from Hugging Face if not cached
+#   /path/to/model.gguf    → local file, used directly
+#   org/repo:file.gguf     → that exact file (plus sibling shards if split)
+#   org/repo:QUANT         → file matching the quant label (e.g. Q4_K_M, UD-Q8_K_XL)
 #   org/repo               → lists available GGUF files in the repo
+# Split models: all shards are fetched and the first shard's path is returned;
+# llama-server loads the rest from the same directory.
 resolve_model() {
   local spec="$1"
 
@@ -60,72 +183,54 @@ resolve_model() {
     return
   fi
 
-  # HF reference
-  if [[ "$spec" == */* && "$spec" != /* ]]; then
-    if [[ "$spec" == *:* ]]; then
-      local repo="${spec%%:*}"
-      local file="${spec#*:}"
-      local target="$MODELS_DIR/$repo/$file"
+  # Must look like an HF ref: org/repo[...], not an absolute path.
+  [[ "$spec" == */* && "$spec" != /* ]] ||
+    die "model not found: $spec (use a local path, org/repo:file.gguf, or org/repo:QUANT)"
 
-      if [[ -f "$target" ]]; then
-        local magic
-        magic="$(head -c 4 "$target")" || true
-        if [[ "$magic" != "GGUF" ]]; then
-          # NOTE: Not smart enough to detect truncated downloads.
-          rm -f "$target"
-          info "removed:" "invalid cached file, re-downloading" >&2
-        else
-          printf '%s' "$target"
-          return
-        fi
-      fi
-
-      # Check the file exists on HF before downloading
-      local url="https://huggingface.co/$repo/resolve/main/$file"
-      local http_code
-      http_code="$(curl -sfI -o /dev/null -w '%{http_code}' "$url")" ||
-        http_code="000"
-      [[ "$http_code" == 200 || "$http_code" == 302 ]] ||
-        die "file not found on HF (HTTP $http_code): $repo/$file"
-
-      info "download:" "https://huggingface.co/$repo → $file" >&2
-      mkdir -p "$(dirname "$target")"
-      curl -L -C - --progress-bar \
-        -o "$target" \
-        "$url" ||
-        die "failed to download $repo/$file"
-
-      # Verify GGUF magic bytes
-      local magic
-      magic="$(head -c 4 "$target")" || true
-      if [[ "$magic" != "GGUF" ]]; then
-        rm -f "$target"
-        die "downloaded file is not a valid GGUF: $repo/$file"
-      fi
-
-      printf '%s' "$target"
-      return
-    else
-      info "fetching:" "file list for $spec" >&2
-      local files
-      files="$(curl -sf "https://huggingface.co/api/models/$spec" |
-        grep -o '"rfilename":"[^"]*\.gguf"' |
-        sed 's/"rfilename":"//;s/"//' |
-        sort)" ||
-        die "failed to fetch file list for $spec"
-
-      if [[ -z "$files" ]]; then
-        die "no GGUF files found in $spec"
-      fi
-
-      printf 'Available GGUF files in %s:\n' "$spec" >&2
-      printf '  %s\n' $files >&2
-      printf '\nUse: --model %s:<filename>\n' "$spec" >&2
-      exit 1
-    fi
+  local repo sel
+  if [[ "$spec" == *:* ]]; then
+    repo="${spec%%:*}"
+    sel="${spec#*:}"
+  else
+    repo="$spec"
+    sel=""
   fi
 
-  die "model not found: $spec (use a local path or org/repo:file.gguf)"
+  # GGUF files available in the repo (rfilenames, may include subfolders).
+  local listing
+  listing="$(curl -sf "https://huggingface.co/api/models/$repo" |
+    grep -o '"rfilename":"[^"]*\.gguf"' |
+    sed 's/"rfilename":"//;s/"//')" || listing=""
+
+  # Bare repo (no selection): list available files and exit.
+  if [[ -z "$sel" ]]; then
+    [[ -n "$listing" ]] || die "no GGUF files found in $repo"
+    printf 'Available GGUF files in %s:\n' "$repo" >&2
+    printf '%s\n' "$listing" | LC_ALL=C sort | sed 's/^/  /' >&2
+    printf '\nUse: --model %s:<filename>  or  --model %s:<QUANT>\n' "$repo" "$repo" >&2
+    exit 1
+  fi
+
+  local -a all=()
+  local line
+  while IFS= read -r line; do [[ -n "$line" ]] && all+=("$line"); done <<<"$listing"
+
+  info "resolving:" "$repo:$sel" >&2
+  local files_out
+  files_out="$(select_gguf_files "$repo" "$sel" "${all[@]}")" || exit 1
+
+  local -a want=()
+  while IFS= read -r line; do [[ -n "$line" ]] && want+=("$line"); done <<<"$files_out"
+  [[ ${#want[@]} -gt 1 ]] && info "split:" "${#want[@]} shards" >&2
+
+  local f target first=""
+  for f in "${want[@]}"; do
+    target="$MODELS_DIR/$repo/$f"
+    hf_download "$repo" "$f" "$target"
+    [[ -z "$first" ]] && first="$target"
+  done
+
+  printf '%s' "$first"
 }
 
 # Locate an executable.
