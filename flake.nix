@@ -13,13 +13,13 @@
         (pkgs.llama-cpp.override {
           cpuArchDynamicDispatch = false; # Incompatible with a static binary.
         }).overrideAttrs
-          (old: {
+          (finalAttrs: old: {
             # Optionally: bump to a more recent version than nixpkgs'
             version = "9621";
             src = pkgs.fetchFromGitHub {
               owner = "ggml-org";
               repo = "llama.cpp";
-              tag = "b9621";
+              tag = "b${finalAttrs.version}";
               hash = "sha256-btVJatQi0efHo2XMFXn+SWqhZUigUYKfaVJiznD9V4Y=";
               leaveDotGit = true;
               postFetch = ''
