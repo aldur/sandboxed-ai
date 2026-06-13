@@ -1,0 +1,71 @@
+name: Update llama.cpp
+
+# Dependabot's nix ecosystem only tracks flake.lock inputs, so it can't bump the
+# tag-pinned llama.cpp override in flake.nix. nix-update does: it updates the
+# version/tag, the source hash, and the npmDepsHash. We then build it to confirm
+# it compiles before opening a PR.
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC, alongside the Dependabot run
+  workflow_dispatch: # allow manual runs from the Actions tab
+  push:
+    branches:
+      - feat/ci # TEMPORARY: run on every push to this branch to test the workflow; remove before merge
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    # macos-15 is Apple Silicon (aarch64-darwin), matching the flake's `system`.
+    # It must build natively here: the flake only exposes packages.aarch64-darwin.*
+    runs-on: macos-15
+    steps:
+      # actions/checkout@v6.0.3
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      # The Metal shader compiler (`xcrun metal`) lives in the full Xcode, not the
+      # Command Line Tools. On Xcode 16 it's also a separately-downloadable
+      # component. Without this, the Metal build fails with
+      # `unable to find utility "metal"`.
+      - name: Enable the Metal toolchain
+        run: |
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          xcodebuild -downloadComponent MetalToolchain || true
+          xcrun -sdk macosx metal --version
+
+      # DeterminateSystems/nix-installer-action@v22
+      # sandbox=false is required: the Metal build needs impure access to the
+      # host's Xcode toolchain, which the Nix sandbox would otherwise block.
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+        with:
+          extra-conf: |
+            sandbox = false
+
+      - name: Bump llama.cpp with nix-update
+        run: |
+          nix run nixpkgs#nix-update -- \
+            --flake \
+            --version=stable \
+            --version-regex 'b(.*)' \
+            llama-cpp
+
+      # Gate the PR on a real build: if this fails, the job fails and the
+      # create-pull-request step below never runs.
+      - name: Verify it builds
+        run: nix build .#llama-cpp -L
+
+      # peter-evans/create-pull-request@v8.1.1
+      - name: Open pull request
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1
+        with:
+          branch: automated/update-llama-cpp
+          title: "flake: bump llama.cpp"
+          commit-message: "flake: bump llama.cpp"
+          body: |
+            Automated llama.cpp bump via `nix-update`.
+
+            Updates `version`, `tag`, the source `hash`, and `npmDepsHash` in
+            `flake.nix`. Verified to build on the runner with `nix build .#llama-cpp`.
+          delete-branch: true
