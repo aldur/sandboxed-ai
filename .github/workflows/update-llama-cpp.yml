@@ -12,46 +12,28 @@ on:
     branches:
       - feat/ci # TEMPORARY: run on every push to this branch to test the workflow; remove before merge
 
-# Least privilege: grant no token permissions by default. Each job opts into
-# only what it needs (see per-job `permissions` below).
 permissions: {}
 
 jobs:
-  # The heavy macOS build runs with a READ-ONLY token. It produces the proposed
-  # change as a patch and hands it to the next job; it never needs write access.
   build:
-    # macos-15 is Apple Silicon (aarch64-darwin), matching the flake's `system`.
-    # It must build natively here: the flake only exposes packages.aarch64-darwin.*
     runs-on: macos-15
     permissions:
       contents: read
     outputs:
       patch: ${{ steps.diff.outputs.patch }}
     steps:
-      # actions/checkout@v6.0.3
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
 
-      # The Metal shader compiler (`xcrun metal`) lives in the full Xcode, not the
-      # Command Line Tools. On Xcode 16 it's also a separately-downloadable
-      # component. Without this, the Metal build fails with
-      # `unable to find utility "metal"`.
-      - name: Enable the Metal toolchain
+      - name: Ensure the Metal toolchain is available
         run: |
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-          xcodebuild -downloadComponent MetalToolchain || true
           xcrun -sdk macosx metal --version
 
-      # DeterminateSystems/nix-installer-action@v22
-      # - diagnostic-endpoint: "" disables the installer's telemetry/diagnostics.
-      # - sandbox=true: nixpkgs' Darwin build grants its sandbox profile access to
-      #   the host Metal toolchain (prepared above), so the build works sandboxed.
-      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
         with:
           diagnostic-endpoint: ""
-          extra-conf: |
-            sandbox = true
 
       - name: Bump llama.cpp with nix-update
         run: |
@@ -61,14 +43,9 @@ jobs:
             --version-regex 'b(.*)' \
             llama-cpp
 
-      # Gate the PR on a real build: if this fails, the job fails and the
-      # pull-request job below never runs.
       - name: Verify it builds
         run: nix build .#llama-cpp -L
 
-      # Export the change as a base64 patch. base64 keeps it on one line and makes
-      # the value safe to interpolate later (no shell metacharacters). Empty when
-      # llama.cpp is already up to date, which skips the pull-request job.
       - name: Capture changes
         id: diff
         run: echo "patch=$(git diff | base64 | tr -d '\n')" >> "$GITHUB_OUTPUT"
@@ -83,8 +60,7 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      # actions/checkout@v6.0.3
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
 
@@ -93,9 +69,8 @@ jobs:
           PATCH: ${{ needs.build.outputs.patch }}
         run: echo "$PATCH" | base64 -d | git apply
 
-      # peter-evans/create-pull-request@v8.1.1
       - name: Open pull request
-        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           branch: automated/update-llama-cpp
           title: "flake: bump llama.cpp"
