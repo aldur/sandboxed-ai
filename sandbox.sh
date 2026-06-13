@@ -5,8 +5,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # ── Defaults ──────────────────────────────────────────────
 PORT=8080
-# Apple-containers vmnet bridge gateway (host as seen from a container).
-GATEWAY_IP=192.168.64.1
 STATE_DIR="$SCRIPT_DIR/.opencode"
 CACHE_DIR="$STATE_DIR/cache"
 TMPDIR="$STATE_DIR/tmp"
@@ -368,9 +366,7 @@ cmd_llama() {
     -D MODEL_DIR="$model_dir" \
     -D CACHE_DIR="$CACHE_DIR" \
     -D TMPDIR="$TMPDIR" \
-    -D BIND_ADDR="*:$PORT" \
-    -D LOOPBACK_ADDR="localhost:$PORT" \
-    -D GATEWAY_ADDR="$GATEWAY_IP:$PORT" \
+    -D NET_ADDR="*:$PORT" \
     -f "$SCRIPT_DIR/llama-server.sb" \
     "$llama_server" \
     --model "$model_path" \
@@ -428,7 +424,7 @@ cmd_llm() {
   export TMPDIR
 
   # Default to llama-server model if no -m flag given
-  echo "llama-server" >$LLM_USER_PATH/default_model.txt
+  echo "llama-server" >"$LLM_USER_PATH/default_model.txt"
 
   local llm_bin
   llm_bin="$(resolve_binary "${LLM:-}" "llm")"
@@ -441,7 +437,7 @@ cmd_llm() {
     -D LLM_USER_PATH="$LLM_USER_PATH" \
     -D TMPDIR="$TMPDIR" \
     -f "$SCRIPT_DIR/llm.sb" \
-    "$llm_bin" "${model_args[@]}" "$@"
+    "$llm_bin" "$@"
 }
 
 # ── Main ──────────────────────────────────────────────────
