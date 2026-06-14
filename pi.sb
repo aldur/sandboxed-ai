@@ -1,0 +1,83 @@
+; vim:ft=scheme
+(version 1)
+(deny default)
+
+;; pi (pi-coding-agent) sandbox
+(import (param "COMMON_SB"))
+
+;; ── Process ──────────────────────────────────────────────
+(allow process-exec
+  (subpath (param "PKG_STORE"))
+  (literal "/usr/bin/env")
+  (literal "/bin/bash")
+  (literal "/bin/zsh")
+  (literal "/bin/sh"))
+
+(allow process-fork)
+(allow process-info-setcontrol)
+
+;; ── Network config + TLS ─────────────────────────────────
+(allow file-read*
+  (literal "/private/etc/ssl/cert.pem")
+  (literal "/private/etc/hosts")
+  (literal "/Library/Preferences/com.apple.networkd.plist"))
+
+;; ── pi state (~/.pi etc.; HOME points here) ──────────────
+(allow file-read* file-write*
+  (subpath (param "PI_DIR")))
+
+;; ── llama-cpp provider extension (read-only, from store) ─
+;; Covered by common.sb's PKG_STORE rule, but the explicit path makes the
+;; dependency obvious and survives a narrower PKG_STORE.
+(allow file-read*
+  (subpath (param "PI_LLAMA_DIR")))
+
+;; ── xcode-select (git toolchain detection) ───────────────
+(allow file-read* file-read-metadata
+  (literal "/private/var/select/developer_dir")
+  (subpath "/Library/Developer/CommandLineTools")
+  (subpath "/Applications/Xcode.app/Contents/Developer"))
+
+;; ── Mach (IPC) ───────────────────────────────────────────
+(allow mach-lookup
+  (global-name "com.apple.CoreServices.coreservicesd")
+  (global-name "com.apple.SystemConfiguration.configd")
+  ;; Terminal / TUI rawmode
+  (global-name "com.apple.iohideventsystem")
+  (global-name "com.apple.windowserver.active"))
+
+;; ── IOKit (terminal keyboard input) ──────────────────────
+(allow iokit-open
+  (iokit-user-client-class "IOHIDLibUserClient")
+  (iokit-user-client-class "IOHIDEventSystemUserClient"))
+
+;; ── Sysctl ───────────────────────────────────────────────
+(allow sysctl-read sysctl-write
+  (sysctl-name "kern.maxfilesperproc"))
+
+;; ── TTY (TUI rawmode) ────────────────────────────────────
+(allow file-read* file-write* file-ioctl
+  (subpath "/dev/tty")
+  (subpath "/dev/pty")
+  (regex #"^/dev/ttys[0-9]+$"))
+
+;; ── Workspace: full read + write ─────────────────────────
+(allow file-read* file-write*
+  (subpath (param "WORKSPACE")))
+
+;; ── Shared memory + semaphores ───────────────────────────
+(allow ipc-posix-shm-read-data ipc-posix-shm-write-data ipc-posix-shm-write-create
+  (ipc-posix-name-prefix "com.apple."))
+
+(allow ipc-posix-sem-open
+       ipc-posix-sem-post
+       ipc-posix-sem-wait)
+
+;; ── Network: localhost llama-server only ──────────────────
+(allow network-outbound
+  (remote tcp (param "NET_ADDR")))
+
+;; ── System libs (locale + timezone + devices) ────────────
+(allow file-read*
+  (subpath "/usr/share/locale")
+  (subpath "/private/var/db/timezone"))

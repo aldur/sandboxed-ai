@@ -30,6 +30,7 @@ Usage: $(basename "$0") <command> [options]
 Commands:
   llama-server  Start the llama-server (sandboxed)
   opencode  Start opencode (sandboxed)
+  pi            Start pi (pi-coding-agent) with the llama-cpp plugin (sandboxed)
   llm           Run llm CLI (sandboxed)
 
 llama-server options:
@@ -42,6 +43,10 @@ opencode options:
   -w, --workspace DIR   Workspace directory (default: script dir)
   Additional args are passed through to opencode.
 
+pi options:
+  -w, --workspace DIR   Workspace directory (default: project dir)
+  Additional args are passed through to pi.
+
 llm options:
   -m, --model MODEL     Model name (default: llama-server)
   Additional args are passed through to llm.
@@ -49,6 +54,9 @@ llm options:
 Environment:
   MODEL             Model spec (overridden by --model)
   LLAMA_SERVER      Explicit path to llama-server binary (fallback: PATH)
+  PI                Explicit path to pi binary (fallback: PATH)
+  PI_LLAMA_DIR      Dir holding the pi llama-cpp plugin's index.ts
+                    (set by the Nix wrapper; required for the pi command)
 EOF
   exit 1
 }
@@ -423,6 +431,71 @@ cmd_opencode() {
     "$opencode_bin" "$@"
 }
 
+cmd_pi() {
+  local workspace="$PROJECT_DIR"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    -w | --workspace)
+      workspace="$2"
+      shift 2
+      ;;
+    *) break ;;
+    esac
+  done
+
+  # The llama-cpp plugin (huggingface/pi-llama) is loaded for the session via
+  # `pi -e <dir>/index.ts`. The Nix wrapper points PI_LLAMA_DIR at the pinned
+  # store copy; outside Nix, set it to a checkout of the repo.
+  local plugin="${PI_LLAMA_DIR:-}/index.ts"
+  [[ -n "${PI_LLAMA_DIR:-}" && -f "$plugin" ]] ||
+    die "pi llama-cpp plugin not found — set PI_LLAMA_DIR to a dir containing index.ts"
+
+  # The plugin discovers the server from LLAMA_BASE_URL. Reuse the port the
+  # llama-server subcommand recorded so it matches a running instance.
+  local llama_port="$PORT"
+  if [[ -f "$STATE_DIR/llama-state" ]]; then
+    local LLAMA_ALIAS LLAMA_PORT
+    # shellcheck source=/dev/null
+    source "$STATE_DIR/llama-state"
+    llama_port="$LLAMA_PORT"
+  fi
+
+  # pi keeps its state under ~/.pi, so root HOME inside the project dir to keep
+  # writable state local (and out of the read-only store / the real HOME).
+  local pi_home="$STATE_DIR/pi"
+  mkdir -p "$pi_home" "$CACHE_DIR" "$TMPDIR"
+  export HOME="$pi_home"
+  export TMPDIR
+  export LLAMA_BASE_URL="http://127.0.0.1:$llama_port/v1"
+  export LLAMA_API_KEY="${LLAMA_API_KEY:-dummy}"
+
+  local pi_bin
+  pi_bin="$(resolve_binary "${PI:-}" "pi")"
+
+  printf 'Starting sandboxed pi:\n'
+  info "binary:" "$pi_bin"
+  info "plugin:" "$plugin"
+  info "server:" "$LLAMA_BASE_URL"
+  info "workspace:" "$workspace"
+  printf '\n'
+
+  ulimit -n 2147483646
+
+  # cd to an allowed dir so pi's getcwd() succeeds inside the sandbox
+  cd "$workspace"
+
+  exec sandbox-exec \
+    -D COMMON_SB="$SCRIPT_DIR/common.sb" \
+    -D PKG_STORE="$(pkg_store_for "$pi_bin")" \
+    -D WORKSPACE="$workspace" \
+    -D PI_DIR="$pi_home" \
+    -D PI_LLAMA_DIR="$PI_LLAMA_DIR" \
+    -D NET_ADDR="localhost:$llama_port" \
+    -f "$SCRIPT_DIR/pi.sb" \
+    "$pi_bin" -e "$plugin" "$@"
+}
+
 cmd_llm() {
   export LLM_USER_PATH="$STATE_DIR/llm"
   export OPENAI_API_KEY="${OPENAI_API_KEY:-dummy}"
@@ -454,6 +527,7 @@ shift
 case "$cmd" in
 llama-server) cmd_llama "$@" ;;
 opencode) cmd_opencode "$@" ;;
+pi) cmd_pi "$@" ;;
 llm) cmd_llm "$@" ;;
 -h | --help | help) usage ;;
 *) die "unknown command: $cmd" ;;

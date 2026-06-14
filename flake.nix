@@ -46,6 +46,19 @@
 
       llm = pkgs.llm.withPlugins { llm-llama-server = true; };
 
+      # Hugging Face's llama.cpp provider for pi: a single index.ts extension
+      # with no npm dependencies (only an optional peer-dep on pi itself), so
+      # the source tree is all we need. It is loaded with `pi -e <dir>/index.ts`
+      # rather than the runtime `pi install` (which git-clones over the network
+      # into a mutable ~/.pi and edits pi settings) — keeping it pinned and
+      # offline, in the same spirit as llm.withPlugins and the bundled profiles.
+      pi-llama = pkgs.fetchFromGitHub {
+        owner = "huggingface";
+        repo = "pi-llama";
+        rev = "a307df2e23b9ad213bd925c1db9a12d540146d4e";
+        hash = "sha256-rCvyW6d4HDp/6kZ3zHnw5SrQNdxTEPQTRCQhJvnFLB4=";
+      };
+
       # Self-contained launcher exposed as `sandboxed-ai` on PATH. Bundles
       # sandbox.sh together with the seatbelt profiles (*.sb) and the runtime it
       # shells out to, so it needs nothing from the working tree. Profiles are
@@ -65,6 +78,7 @@
             ./llama-server.sb
             ./llm.sb
             ./opencode.sb
+            ./pi.sb
           ];
         };
 
@@ -76,8 +90,9 @@
           runHook preInstall
           libexec=$out/libexec/sandboxed-ai
           install -Dm755 sandbox.sh $libexec/sandbox.sh
-          install -m444 common.sb llama-server.sb llm.sb opencode.sb $libexec/
+          install -m444 common.sb llama-server.sb llm.sb opencode.sb pi.sb $libexec/
           makeWrapper $libexec/sandbox.sh $out/bin/sandboxed-ai \
+            --set PI_LLAMA_DIR ${pi-llama} \
             --prefix PATH : ${
               pkgs.lib.makeBinPath [
                 pkgs.bash
@@ -88,6 +103,7 @@
                 llama-cpp
                 llm
                 pkgs.opencode
+                pkgs.pi-coding-agent
               ]
             }
           runHook postInstall
@@ -98,7 +114,7 @@
     in
     {
       packages.${system} = {
-        inherit llama-cpp llm sandboxed-ai;
+        inherit llama-cpp llm pi-llama sandboxed-ai;
         default = sandboxed-ai;
       };
 
@@ -107,6 +123,7 @@
           llama-cpp
           llm
           pkgs.opencode
+          pkgs.pi-coding-agent
           sandboxed-ai
         ];
       };
