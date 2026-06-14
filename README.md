@@ -20,7 +20,7 @@ The [sandbox.sh](./sandbox.sh) script does the heavy lifting.
 brew install llama.cpp
 
 # Sandbox it and run it
-./sandbox.sh llama-server --model unsloth/Qwen3.5-9B-GGUF:Qwen3.5-9B-Q4_0.gguf
+./sandbox.sh llama-server --model unsloth/Qwen3.6-35B-A3B-MTP-GGUF:UD-Q8_K_XL
 
 # Binds to localhost:8080
 # Additional arguments go to `llama-server`
@@ -56,8 +56,9 @@ Commands:
   llm           Run llm CLI (sandboxed)
 
 llama-server options:
-  --model SPEC          Local path or HF ref (org/repo:file.gguf)
-                        Omit filename to list available GGUF files
+  --model SPEC          Local path, HF file (org/repo:file.gguf), or
+                        HF quant (org/repo:Q4_K_M). Omit the part after ':'
+                        to list available GGUF files.
   All other flags are passed through to llama-server.
 
 opencode options:
@@ -71,7 +72,6 @@ llm options:
 Environment:
   MODEL             Model spec (overridden by --model)
   LLAMA_SERVER      Explicit path to llama-server binary (fallback: PATH)
-
 ```
 
 [0]: https://aldur.blog/articles/2026/03/12/sandboxing-local-models-on-macos
