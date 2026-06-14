@@ -8,9 +8,6 @@ on:
   schedule:
     - cron: "0 6 * * 1" # Mondays 06:00 UTC, alongside the Dependabot run
   workflow_dispatch: # allow manual runs from the Actions tab
-  push:
-    branches:
-      - feat/ci # TEMPORARY: run on every push to this branch to test the workflow; remove before merge
 
 permissions: {}
 
