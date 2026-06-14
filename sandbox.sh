@@ -3,12 +3,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Seatbelt profiles (*.sb) sit next to this script — in the repo when run as
+# ./sandbox.sh, in the Nix store when run as the bundled `sandboxed-ai`. State,
+# however, must be writable, so it is rooted at the directory you run from
+# (the store copy is read-only). Override the latter with SANDBOXED_AI_HOME.
+PROJECT_DIR="${SANDBOXED_AI_HOME:-$PWD}"
+
 # ── Defaults ──────────────────────────────────────────────
 PORT=8080
-STATE_DIR="$SCRIPT_DIR/.opencode"
+STATE_DIR="$PROJECT_DIR/.opencode"
 CACHE_DIR="$STATE_DIR/cache"
 TMPDIR="$STATE_DIR/tmp"
-MODELS_DIR="$SCRIPT_DIR/models"
+MODELS_DIR="$PROJECT_DIR/models"
 
 # ── Helpers ───────────────────────────────────────────────
 die() {
@@ -376,7 +382,7 @@ cmd_llama() {
 }
 
 cmd_opencode() {
-  local workspace="$SCRIPT_DIR"
+  local workspace="$PROJECT_DIR"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in

@@ -46,29 +46,60 @@
 
       llm = pkgs.llm.withPlugins { llm-llama-server = true; };
 
-      # Thin launcher so `sandbox` works on PATH inside the dev shell.
-      # sandbox.sh resolves its profiles/state relative to its own location, so
-      # exec the working-tree copy rather than a Nix store copy. Resolve it from
-      # the current directory at call time (walk up to the nearest sandbox.sh):
-      # this makes `sandbox` behave exactly like ./sandbox.sh. A path frozen at
-      # shell entry silently diverges once you switch worktree/branch or edit a
-      # profile, so `sandbox` would run a stale .sb while ./sandbox.sh runs yours.
-      sandbox = pkgs.writeShellScriptBin "sandbox" ''
-        dir="$PWD"
-        while [ "$dir" != "/" ] && [ ! -x "$dir/sandbox.sh" ]; do
-          dir="$(dirname "$dir")"
-        done
-        [ -x "$dir/sandbox.sh" ] || {
-          echo "sandbox: no sandbox.sh found from $PWD upward" >&2
-          exit 1
-        }
-        exec "$dir/sandbox.sh" "$@"
-      '';
+      # Self-contained launcher exposed as `sandboxed-ai` on PATH. Bundles
+      # sandbox.sh together with the seatbelt profiles (*.sb) and the runtime it
+      # shells out to, so it needs nothing from the working tree. Profiles are
+      # read from next to the script in the store; writable state (models,
+      # cache, generated config) lives under the directory you run it from.
+      # Named `sandboxed-ai`, not `sandbox`, to avoid colliding with shells that
+      # already define a `sandbox` abbreviation/function.
+      sandboxed-ai = pkgs.stdenv.mkDerivation {
+        pname = "sandboxed-ai";
+        version = "0.2.0";
+
+        src = pkgs.lib.fileset.toSource {
+          root = ./.;
+          fileset = pkgs.lib.fileset.unions [
+            ./sandbox.sh
+            ./common.sb
+            ./llama-server.sb
+            ./llm.sb
+            ./opencode.sb
+          ];
+        };
+
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        dontConfigure = true;
+        dontBuild = true;
+
+        installPhase = ''
+          runHook preInstall
+          libexec=$out/libexec/sandboxed-ai
+          install -Dm755 sandbox.sh $libexec/sandbox.sh
+          install -m444 common.sb llama-server.sb llm.sb opencode.sb $libexec/
+          makeWrapper $libexec/sandbox.sh $out/bin/sandboxed-ai \
+            --prefix PATH : ${
+              pkgs.lib.makeBinPath [
+                pkgs.bash
+                pkgs.coreutils
+                pkgs.curl
+                pkgs.gnugrep
+                pkgs.gnused
+                llama-cpp
+                llm
+                pkgs.opencode
+              ]
+            }
+          runHook postInstall
+        '';
+
+        meta.mainProgram = "sandboxed-ai";
+      };
     in
     {
       packages.${system} = {
-        inherit llama-cpp llm;
-        default = llama-cpp;
+        inherit llama-cpp llm sandboxed-ai;
+        default = sandboxed-ai;
       };
 
       devShells.${system}.default = pkgs.mkShell {
@@ -76,7 +107,7 @@
           llama-cpp
           llm
           pkgs.opencode
-          sandbox
+          sandboxed-ai
         ];
       };
     };
