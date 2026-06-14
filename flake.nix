@@ -59,6 +59,25 @@
         hash = "sha256-rCvyW6d4HDp/6kZ3zHnw5SrQNdxTEPQTRCQhJvnFLB4=";
       };
 
+      # `pi` bundled with the llama-cpp plugin: the upstream agent wrapped so the
+      # pinned pi-llama extension auto-loads on every run (`pi -e <store>/index.ts`,
+      # a position-independent repeatable flag) — no `pi install`, no flag to
+      # remember. Unsandboxed; for the seatbelt-wrapped variant use
+      # `sandboxed-ai pi`. The plugin finds your server via LLAMA_BASE_URL
+      # (default http://localhost:8080/v1).
+      pi = pkgs.runCommand "pi-with-llama-${pkgs.pi-coding-agent.version}"
+        {
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+          meta = pkgs.pi-coding-agent.meta // {
+            mainProgram = "pi";
+            description = "pi-coding-agent bundled with the huggingface/pi-llama llama.cpp plugin";
+          };
+        }
+        ''
+          makeWrapper ${pkgs.lib.getExe pkgs.pi-coding-agent} $out/bin/pi \
+            --add-flags "-e ${pi-llama}/index.ts"
+        '';
+
       # Self-contained launcher exposed as `sandboxed-ai` on PATH. Bundles
       # sandbox.sh together with the seatbelt profiles (*.sb) and the runtime it
       # shells out to, so it needs nothing from the working tree. Profiles are
@@ -114,7 +133,7 @@
     in
     {
       packages.${system} = {
-        inherit llama-cpp llm pi-llama sandboxed-ai;
+        inherit llama-cpp llm pi pi-llama sandboxed-ai;
         default = sandboxed-ai;
       };
 
