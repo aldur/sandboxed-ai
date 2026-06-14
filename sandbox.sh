@@ -470,6 +470,16 @@ cmd_pi() {
   export LLAMA_BASE_URL="http://127.0.0.1:$llama_port/v1"
   export LLAMA_API_KEY="${LLAMA_API_KEY:-dummy}"
 
+  # pi probes tmux keyboard setup by spawning `tmux`; the sandbox denies the
+  # exec and the spawn throws synchronously, crashing pi on startup. The probe
+  # is gated on $TMUX, so hide it — tmux-native features can't work sandboxed.
+  unset TMUX
+  # Read-only store install behind a network-restricted sandbox: skip pi's
+  # startup network ops (self-update / version check / tool fetch), which can
+  # only fail here. Does not affect the llama-cpp plugin's model discovery,
+  # which talks to LLAMA_BASE_URL independently of this flag.
+  export PI_OFFLINE=1
+
   local pi_bin
   pi_bin="$(resolve_binary "${PI:-}" "pi")"
 
