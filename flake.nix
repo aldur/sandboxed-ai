@@ -47,10 +47,22 @@
       llm = pkgs.llm.withPlugins { llm-llama-server = true; };
 
       # Thin launcher so `sandbox` works on PATH inside the dev shell.
-      # sandbox.sh resolves its profiles/state relative to its own location,
-      # so exec the working-tree copy rather than a Nix store copy.
+      # sandbox.sh resolves its profiles/state relative to its own location, so
+      # exec the working-tree copy rather than a Nix store copy. Resolve it from
+      # the current directory at call time (walk up to the nearest sandbox.sh):
+      # this makes `sandbox` behave exactly like ./sandbox.sh. A path frozen at
+      # shell entry silently diverges once you switch worktree/branch or edit a
+      # profile, so `sandbox` would run a stale .sb while ./sandbox.sh runs yours.
       sandbox = pkgs.writeShellScriptBin "sandbox" ''
-        exec "''${SANDBOXED_AI_ROOT:-$PWD}/sandbox.sh" "$@"
+        dir="$PWD"
+        while [ "$dir" != "/" ] && [ ! -x "$dir/sandbox.sh" ]; do
+          dir="$(dirname "$dir")"
+        done
+        [ -x "$dir/sandbox.sh" ] || {
+          echo "sandbox: no sandbox.sh found from $PWD upward" >&2
+          exit 1
+        }
+        exec "$dir/sandbox.sh" "$@"
       '';
     in
     {
@@ -66,12 +78,6 @@
           pkgs.opencode
           sandbox
         ];
-
-        # Point the `sandbox` launcher at the repo root so it can find
-        # sandbox.sh and its sibling .sb profiles regardless of cwd.
-        shellHook = ''
-          export SANDBOXED_AI_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
-        '';
       };
     };
 }
