@@ -14,6 +14,11 @@ See [this blog post][0] for background, more info, and Qwen3.5 test-runs.
 
 ## Sandboxing: how to
 
+> [!TIP]
+> If you use `nix`, you can just run `nix run github:aldur/sandboxed-ai
+> llama-server` or `nix shell github:aldur/sandboxed-ai` to bring
+> `sandboxed-ai`, `pi`, etc into PATH.
+
 The [sandbox.sh](./sandbox.sh) script does the heavy lifting.
 
 ```bash
