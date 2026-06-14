@@ -111,6 +111,7 @@
           install -Dm755 sandbox.sh $libexec/sandbox.sh
           install -m444 common.sb llama-server.sb llm.sb opencode.sb pi.sb $libexec/
           makeWrapper $libexec/sandbox.sh $out/bin/sandboxed-ai \
+            --set SANDBOXED_AI_PROG sandboxed-ai \
             --set PI_LLAMA_DIR ${pi-llama} \
             --prefix PATH : ${
               pkgs.lib.makeBinPath [

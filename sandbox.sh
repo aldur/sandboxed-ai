@@ -3,6 +3,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Program name shown in usage/messages. The Nix wrapper sets SANDBOXED_AI_PROG
+# so it reads `sandboxed-ai`; run directly it falls back to the script basename.
+# ($0 itself must stay the real path — SCRIPT_DIR above depends on it.)
+PROG="${SANDBOXED_AI_PROG:-$(basename "$0")}"
+
 # Seatbelt profiles (*.sb) sit next to this script — in the repo when run as
 # ./sandbox.sh, in the Nix store when run as the bundled `sandboxed-ai`. State,
 # however, must be writable, so it is rooted at the directory you run from
@@ -25,7 +30,7 @@ info() { printf '  %-14s %s\n' "$1" "$2"; }
 
 usage() {
   cat >&2 <<EOF
-Usage: $(basename "$0") <command> [options]
+Usage: $PROG <command> [options]
 
 Commands:
   llama-server  Start the llama-server (sandboxed)
