@@ -76,8 +76,12 @@
   (ipc-posix-name-prefix "com.apple.GPUCompiler")
   (ipc-posix-name-prefix "com.apple.ane"))
 
-;; ── Network: localhost only, port 8080 ──────────────────
+;; ── Network ──────────────────────────────────────────────
+;; Seatbelt only permits "*" or "localhost" as the host in a network
+;; address. This allows binding/accepting that port on any interface (loopback
+;; for host clients, the vmnet bridge for containers). Outbound stays denied
+;; below. `llama-server` by default binds to localhost. 
 (allow network-bind network-inbound
-  (local tcp "localhost:8080"))
+  (local tcp (param "NET_ADDR")))
 
 (deny network-outbound (with send-signal SIGKILL))

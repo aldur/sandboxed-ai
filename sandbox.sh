@@ -3,12 +3,23 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Program name shown in usage/messages. The Nix wrapper sets SANDBOXED_AI_PROG
+# so it reads `sandboxed-ai`; run directly it falls back to the script basename.
+# ($0 itself must stay the real path — SCRIPT_DIR above depends on it.)
+PROG="${SANDBOXED_AI_PROG:-$(basename "$0")}"
+
+# Seatbelt profiles (*.sb) sit next to this script — in the repo when run as
+# ./sandbox.sh, in the Nix store when run as the bundled `sandboxed-ai`. State,
+# however, must be writable, so it is rooted at the directory you run from
+# (the store copy is read-only). Override the latter with SANDBOXED_AI_HOME.
+PROJECT_DIR="${SANDBOXED_AI_HOME:-$PWD}"
+
 # ── Defaults ──────────────────────────────────────────────
 PORT=8080
-STATE_DIR="$SCRIPT_DIR/.opencode"
+STATE_DIR="$PROJECT_DIR/.opencode"
 CACHE_DIR="$STATE_DIR/cache"
 TMPDIR="$STATE_DIR/tmp"
-MODELS_DIR="$SCRIPT_DIR/models"
+MODELS_DIR="$PROJECT_DIR/models"
 
 # ── Helpers ───────────────────────────────────────────────
 die() {
@@ -19,21 +30,27 @@ info() { printf '  %-14s %s\n' "$1" "$2"; }
 
 usage() {
   cat >&2 <<EOF
-Usage: $(basename "$0") <command> [options]
+Usage: $PROG <command> [options]
 
 Commands:
   llama-server  Start the llama-server (sandboxed)
   opencode  Start opencode (sandboxed)
+  pi            Start pi (pi-coding-agent) with the llama-cpp plugin (sandboxed)
   llm           Run llm CLI (sandboxed)
 
 llama-server options:
-  --model SPEC          Local path or HF ref (org/repo:file.gguf)
-                        Omit filename to list available GGUF files
+  --model SPEC          Local path, HF file (org/repo:file.gguf), or
+                        HF quant (org/repo:Q4_K_M). Omit the part after ':'
+                        to list available GGUF files.
   All other flags are passed through to llama-server.
 
 opencode options:
   -w, --workspace DIR   Workspace directory (default: script dir)
   Additional args are passed through to opencode.
+
+pi options:
+  -w, --workspace DIR   Workspace directory (default: project dir)
+  Additional args are passed through to pi.
 
 llm options:
   -m, --model MODEL     Model name (default: llama-server)
@@ -42,15 +59,140 @@ llm options:
 Environment:
   MODEL             Model spec (overridden by --model)
   LLAMA_SERVER      Explicit path to llama-server binary (fallback: PATH)
+  PI                Explicit path to pi binary (fallback: PATH)
+  PI_LLAMA_DIR      Dir holding the pi llama-cpp plugin's index.ts
+                    (set by the Nix wrapper; required for the pi command)
 EOF
   exit 1
 }
 
-# Resolve a model spec to a local GGUF file path.
+# Strip a GGUF split suffix (-00001-of-00003.gguf) or a plain .gguf extension,
+# yielding a key shared by every shard of one quant.
+strip_shard() {
+  local f="$1"
+  if [[ "$f" =~ ^(.*)-[0-9]+-of-[0-9]+\.gguf$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  else
+    printf '%s' "${f%.gguf}"
+  fi
+}
+
+# Choose the GGUF file(s) for a selection within a repo's listing.
+# Prints the chosen rfilename(s), newline-separated, to stdout.
+# On a missing or ambiguous selection, explains on stderr and returns 1.
+#   $1 repo, $2 selection (file.gguf or QUANT), remaining args: GGUF rfilenames
+select_gguf_files() {
+  local repo="$1" sel="$2"
+  shift 2
+  local -a all=("$@")
+  local -a want=()
+  local f
+
+  if [[ "$sel" == *.gguf ]]; then
+    # Explicit filename: pull in sibling shards if it is part of a split set.
+    local key
+    key="$(strip_shard "$sel")"
+    for f in "${all[@]}"; do
+      [[ "$(strip_shard "$f")" == "$key" ]] && want+=("$f")
+    done
+    # Trust the literal name if the listing did not surface it.
+    [[ ${#want[@]} -gt 0 ]] || want=("$sel")
+  else
+    # Quant label: case-insensitive substring match against the listing.
+    [[ ${#all[@]} -gt 0 ]] || {
+      printf "error: cannot resolve quant '%s': no GGUF listing for %s\n" "$sel" "$repo" >&2
+      return 1
+    }
+
+    local sel_lc="${sel,,}"
+    local -a matches=()
+    for f in "${all[@]}"; do
+      local base="${f##*/}"
+      [[ "${base,,}" == *"$sel_lc"* ]] && matches+=("$f")
+    done
+    [[ ${#matches[@]} -gt 0 ]] || {
+      printf "error: no GGUF matching quant '%s' in %s. Available:\n" "$sel" "$repo" >&2
+      printf '%s\n' "${all[@]}" | LC_ALL=C sort | sed 's/^/  /' >&2
+      return 1
+    }
+
+    # Collapse shards: group matches by quant key.
+    local -A keyset=()
+    for f in "${matches[@]}"; do keyset["$(strip_shard "$f")"]=1; done
+
+    local chosen=""
+    if [[ ${#keyset[@]} -eq 1 ]]; then
+      for chosen in "${!keyset[@]}"; do :; done
+    else
+      # Tie-break: prefer the single quant whose name ends with the label
+      # (e.g. 'Q6_K' over 'Q6_K_XL').
+      local k
+      local -a ends=()
+      for k in "${!keyset[@]}"; do
+        local kb="${k##*/}"
+        [[ "${kb,,}" == *"$sel_lc" ]] && ends+=("$k")
+      done
+      if [[ ${#ends[@]} -eq 1 ]]; then
+        chosen="${ends[0]}"
+      else
+        printf "error: quant '%s' is ambiguous in %s; matches:\n" "$sel" "$repo" >&2
+        printf '%s\n' "${!keyset[@]}" | sed 's#.*/##' | LC_ALL=C sort | sed 's/^/  /' >&2
+        printf 'specify a more precise quant or the full filename.\n' >&2
+        return 1
+      fi
+    fi
+
+    for f in "${matches[@]}"; do
+      [[ "$(strip_shard "$f")" == "$chosen" ]] && want+=("$f")
+    done
+  fi
+
+  printf '%s\n' "${want[@]}" | LC_ALL=C sort
+}
+
+# Download a single GGUF file from HF into target (resumable), verifying its
+# magic bytes. Reuses a valid cached copy. All output goes to stderr.
+hf_download() {
+  local repo="$1" file="$2" target="$3"
+  local magic
+
+  if [[ -f "$target" ]]; then
+    # NOTE: Not smart enough to detect truncated downloads.
+    magic="$(head -c 4 "$target")" || true
+    if [[ "$magic" == "GGUF" ]]; then
+      info "cached:" "$file" >&2
+      return
+    fi
+    rm -f "$target"
+    info "removed:" "invalid cached file, re-downloading" >&2
+  fi
+
+  local url="https://huggingface.co/$repo/resolve/main/$file"
+  local http_code
+  http_code="$(curl -sfI -o /dev/null -w '%{http_code}' "$url")" || http_code="000"
+  [[ "$http_code" == 200 || "$http_code" == 302 ]] ||
+    die "file not found on HF (HTTP $http_code): $repo/$file"
+
+  info "download:" "$file" >&2
+  mkdir -p "$(dirname "$target")"
+  curl -L -C - --progress-bar -o "$target" "$url" ||
+    die "failed to download $repo/$file"
+
+  magic="$(head -c 4 "$target")" || true
+  [[ "$magic" == "GGUF" ]] || {
+    rm -f "$target"
+    die "downloaded file is not a valid GGUF: $repo/$file"
+  }
+}
+
+# Resolve a model spec to a local GGUF file path, downloading from HF as needed.
 # Accepts:
-#   /path/to/model.gguf   → local file, used directly
-#   org/repo:file.gguf     → downloaded from Hugging Face if not cached
+#   /path/to/model.gguf    → local file, used directly
+#   org/repo:file.gguf     → that exact file (plus sibling shards if split)
+#   org/repo:QUANT         → file matching the quant label (e.g. Q4_K_M, UD-Q8_K_XL)
 #   org/repo               → lists available GGUF files in the repo
+# Split models: all shards are fetched and the first shard's path is returned;
+# llama-server loads the rest from the same directory.
 resolve_model() {
   local spec="$1"
 
@@ -60,72 +202,54 @@ resolve_model() {
     return
   fi
 
-  # HF reference
-  if [[ "$spec" == */* && "$spec" != /* ]]; then
-    if [[ "$spec" == *:* ]]; then
-      local repo="${spec%%:*}"
-      local file="${spec#*:}"
-      local target="$MODELS_DIR/$repo/$file"
+  # Must look like an HF ref: org/repo[...], not an absolute path.
+  [[ "$spec" == */* && "$spec" != /* ]] ||
+    die "model not found: $spec (use a local path, org/repo:file.gguf, or org/repo:QUANT)"
 
-      if [[ -f "$target" ]]; then
-        local magic
-        magic="$(head -c 4 "$target")" || true
-        if [[ "$magic" != "GGUF" ]]; then
-          # NOTE: Not smart enough to detect truncated downloads.
-          rm -f "$target"
-          info "removed:" "invalid cached file, re-downloading" >&2
-        else
-          printf '%s' "$target"
-          return
-        fi
-      fi
-
-      # Check the file exists on HF before downloading
-      local url="https://huggingface.co/$repo/resolve/main/$file"
-      local http_code
-      http_code="$(curl -sfI -o /dev/null -w '%{http_code}' "$url")" ||
-        http_code="000"
-      [[ "$http_code" == 200 || "$http_code" == 302 ]] ||
-        die "file not found on HF (HTTP $http_code): $repo/$file"
-
-      info "download:" "https://huggingface.co/$repo → $file" >&2
-      mkdir -p "$(dirname "$target")"
-      curl -L -C - --progress-bar \
-        -o "$target" \
-        "$url" ||
-        die "failed to download $repo/$file"
-
-      # Verify GGUF magic bytes
-      local magic
-      magic="$(head -c 4 "$target")" || true
-      if [[ "$magic" != "GGUF" ]]; then
-        rm -f "$target"
-        die "downloaded file is not a valid GGUF: $repo/$file"
-      fi
-
-      printf '%s' "$target"
-      return
-    else
-      info "fetching:" "file list for $spec" >&2
-      local files
-      files="$(curl -sf "https://huggingface.co/api/models/$spec" |
-        grep -o '"rfilename":"[^"]*\.gguf"' |
-        sed 's/"rfilename":"//;s/"//' |
-        sort)" ||
-        die "failed to fetch file list for $spec"
-
-      if [[ -z "$files" ]]; then
-        die "no GGUF files found in $spec"
-      fi
-
-      printf 'Available GGUF files in %s:\n' "$spec" >&2
-      printf '  %s\n' $files >&2
-      printf '\nUse: --model %s:<filename>\n' "$spec" >&2
-      exit 1
-    fi
+  local repo sel
+  if [[ "$spec" == *:* ]]; then
+    repo="${spec%%:*}"
+    sel="${spec#*:}"
+  else
+    repo="$spec"
+    sel=""
   fi
 
-  die "model not found: $spec (use a local path or org/repo:file.gguf)"
+  # GGUF files available in the repo (rfilenames, may include subfolders).
+  local listing
+  listing="$(curl -sf "https://huggingface.co/api/models/$repo" |
+    grep -o '"rfilename":"[^"]*\.gguf"' |
+    sed 's/"rfilename":"//;s/"//')" || listing=""
+
+  # Bare repo (no selection): list available files and exit.
+  if [[ -z "$sel" ]]; then
+    [[ -n "$listing" ]] || die "no GGUF files found in $repo"
+    printf 'Available GGUF files in %s:\n' "$repo" >&2
+    printf '%s\n' "$listing" | LC_ALL=C sort | sed 's/^/  /' >&2
+    printf '\nUse: --model %s:<filename>  or  --model %s:<QUANT>\n' "$repo" "$repo" >&2
+    exit 1
+  fi
+
+  local -a all=()
+  local line
+  while IFS= read -r line; do [[ -n "$line" ]] && all+=("$line"); done <<<"$listing"
+
+  info "resolving:" "$repo:$sel" >&2
+  local files_out
+  files_out="$(select_gguf_files "$repo" "$sel" "${all[@]}")" || exit 1
+
+  local -a want=()
+  while IFS= read -r line; do [[ -n "$line" ]] && want+=("$line"); done <<<"$files_out"
+  [[ ${#want[@]} -gt 1 ]] && info "split:" "${#want[@]} shards" >&2
+
+  local f target first=""
+  for f in "${want[@]}"; do
+    target="$MODELS_DIR/$repo/$f"
+    hf_download "$repo" "$f" "$target"
+    [[ -z "$first" ]] && first="$target"
+  done
+
+  printf '%s' "$first"
 }
 
 # Locate an executable.
@@ -261,6 +385,7 @@ cmd_llama() {
     -D MODEL_DIR="$model_dir" \
     -D CACHE_DIR="$CACHE_DIR" \
     -D TMPDIR="$TMPDIR" \
+    -D NET_ADDR="*:$PORT" \
     -f "$SCRIPT_DIR/llama-server.sb" \
     "$llama_server" \
     --model "$model_path" \
@@ -270,7 +395,7 @@ cmd_llama() {
 }
 
 cmd_opencode() {
-  local workspace="$SCRIPT_DIR"
+  local workspace="$PROJECT_DIR"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -311,6 +436,81 @@ cmd_opencode() {
     "$opencode_bin" "$@"
 }
 
+cmd_pi() {
+  local workspace="$PROJECT_DIR"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    -w | --workspace)
+      workspace="$2"
+      shift 2
+      ;;
+    *) break ;;
+    esac
+  done
+
+  # The llama-cpp plugin (huggingface/pi-llama) is loaded for the session via
+  # `pi -e <dir>/index.ts`. The Nix wrapper points PI_LLAMA_DIR at the pinned
+  # store copy; outside Nix, set it to a checkout of the repo.
+  local plugin="${PI_LLAMA_DIR:-}/index.ts"
+  [[ -n "${PI_LLAMA_DIR:-}" && -f "$plugin" ]] ||
+    die "pi llama-cpp plugin not found — set PI_LLAMA_DIR to a dir containing index.ts"
+
+  # The plugin discovers the server from LLAMA_BASE_URL. Reuse the port the
+  # llama-server subcommand recorded so it matches a running instance.
+  local llama_port="$PORT"
+  if [[ -f "$STATE_DIR/llama-state" ]]; then
+    local LLAMA_ALIAS LLAMA_PORT
+    # shellcheck source=/dev/null
+    source "$STATE_DIR/llama-state"
+    llama_port="$LLAMA_PORT"
+  fi
+
+  # pi keeps its state under ~/.pi, so root HOME inside the project dir to keep
+  # writable state local (and out of the read-only store / the real HOME).
+  local pi_home="$STATE_DIR/pi"
+  mkdir -p "$pi_home" "$CACHE_DIR" "$TMPDIR"
+  export HOME="$pi_home"
+  export TMPDIR
+  export LLAMA_BASE_URL="http://127.0.0.1:$llama_port/v1"
+  export LLAMA_API_KEY="${LLAMA_API_KEY:-dummy}"
+
+  # pi probes tmux keyboard setup by spawning `tmux`; the sandbox denies the
+  # exec and the spawn throws synchronously, crashing pi on startup. The probe
+  # is gated on $TMUX, so hide it — tmux-native features can't work sandboxed.
+  unset TMUX
+  # Read-only store install behind a network-restricted sandbox: skip pi's
+  # startup network ops (self-update / version check / tool fetch), which can
+  # only fail here. Does not affect the llama-cpp plugin's model discovery,
+  # which talks to LLAMA_BASE_URL independently of this flag.
+  export PI_OFFLINE=1
+
+  local pi_bin
+  pi_bin="$(resolve_binary "${PI:-}" "pi")"
+
+  printf 'Starting sandboxed pi:\n'
+  info "binary:" "$pi_bin"
+  info "plugin:" "$plugin"
+  info "server:" "$LLAMA_BASE_URL"
+  info "workspace:" "$workspace"
+  printf '\n'
+
+  ulimit -n 2147483646
+
+  # cd to an allowed dir so pi's getcwd() succeeds inside the sandbox
+  cd "$workspace"
+
+  exec sandbox-exec \
+    -D COMMON_SB="$SCRIPT_DIR/common.sb" \
+    -D PKG_STORE="$(pkg_store_for "$pi_bin")" \
+    -D WORKSPACE="$workspace" \
+    -D PI_DIR="$pi_home" \
+    -D PI_LLAMA_DIR="$PI_LLAMA_DIR" \
+    -D NET_ADDR="localhost:$llama_port" \
+    -f "$SCRIPT_DIR/pi.sb" \
+    "$pi_bin" -e "$plugin" "$@"
+}
+
 cmd_llm() {
   export LLM_USER_PATH="$STATE_DIR/llm"
   export OPENAI_API_KEY="${OPENAI_API_KEY:-dummy}"
@@ -318,7 +518,7 @@ cmd_llm() {
   export TMPDIR
 
   # Default to llama-server model if no -m flag given
-  echo "llama-server" >$LLM_USER_PATH/default_model.txt
+  echo "llama-server" >"$LLM_USER_PATH/default_model.txt"
 
   local llm_bin
   llm_bin="$(resolve_binary "${LLM:-}" "llm")"
@@ -331,7 +531,7 @@ cmd_llm() {
     -D LLM_USER_PATH="$LLM_USER_PATH" \
     -D TMPDIR="$TMPDIR" \
     -f "$SCRIPT_DIR/llm.sb" \
-    "$llm_bin" "${model_args[@]}" "$@"
+    "$llm_bin" "$@"
 }
 
 # ── Main ──────────────────────────────────────────────────
@@ -342,6 +542,7 @@ shift
 case "$cmd" in
 llama-server) cmd_llama "$@" ;;
 opencode) cmd_opencode "$@" ;;
+pi) cmd_pi "$@" ;;
 llm) cmd_llm "$@" ;;
 -h | --help | help) usage ;;
 *) die "unknown command: $cmd" ;;
