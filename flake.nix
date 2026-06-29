@@ -16,19 +16,19 @@
           (
             finalAttrs: old: {
               # Optionally: bump to a more recent version than nixpkgs'
-              version = "9756";
+              version = "9840";
               src = pkgs.fetchFromGitHub {
                 owner = "ggml-org";
                 repo = "llama.cpp";
                 tag = "b${finalAttrs.version}";
-                hash = "sha256-PEmNG0d4cn2Dv/v1/3Ln4wBWB/JhFgCPifLRu7bZ014=";
+                hash = "sha256-LugzC4UmzC49tRF/DXb3dnXPW4BJkoAaKETrMmDhTsY=";
                 leaveDotGit = true;
                 postFetch = ''
                   git -C "$out" rev-parse --short HEAD > $out/COMMIT
                   find "$out" -name .git -print0 | xargs -0 rm -rf
                 '';
               };
-              npmDepsHash = "sha256-0dctM/apI3ysMIEVBaBXO9hZMWskpJpNpOws1gwiOYc=";
+              npmDepsHash = "sha256-X1DZgmhS/zHTqDT5zq0kywwntthcJ9vRXeqyO3zz6UU=";
               cmakeFlags =
                 builtins.filter (f: builtins.match "-D(GGML_NATIVE|BUILD_SHARED_LIBS).*" f == null) (
                   old.cmakeFlags or [ ]
