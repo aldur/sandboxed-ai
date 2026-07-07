@@ -52,11 +52,24 @@
       # rather than the runtime `pi install` (which git-clones over the network
       # into a mutable ~/.pi and edits pi settings) — keeping it pinned and
       # offline, in the same spirit as llm.withPlugins and the bundled profiles.
-      pi-llama = pkgs.fetchFromGitHub {
-        owner = "huggingface";
-        repo = "pi-llama";
-        rev = "a307df2e23b9ad213bd925c1db9a12d540146d4e";
-        hash = "sha256-rCvyW6d4HDp/6kZ3zHnw5SrQNdxTEPQTRCQhJvnFLB4=";
+      # Wrapped in a derivation (rather than exposing fetchFromGitHub directly)
+      # so it carries a `version` that nix-update can bump in CI.
+      pi-llama = pkgs.stdenvNoCC.mkDerivation {
+        pname = "pi-llama";
+        version = "0-unstable-2026-06-14";
+
+        src = pkgs.fetchFromGitHub {
+          owner = "huggingface";
+          repo = "pi-llama";
+          rev = "a307df2e23b9ad213bd925c1db9a12d540146d4e";
+          hash = "sha256-rCvyW6d4HDp/6kZ3zHnw5SrQNdxTEPQTRCQhJvnFLB4=";
+        };
+
+        installPhase = ''
+          runHook preInstall
+          cp -r . $out
+          runHook postInstall
+        '';
       };
 
       # `pi` bundled with the llama-cpp plugin: the upstream agent wrapped so the
