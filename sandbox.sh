@@ -150,39 +150,98 @@ select_gguf_files() {
   printf '%s\n' "${want[@]}" | LC_ALL=C sort
 }
 
-# Download a single GGUF file from HF into target (resumable), verifying its
-# magic bytes. Reuses a valid cached copy. All output goes to stderr.
+# Print the SHA256 of a file, or return 1 if no hashing tool is available.
+sha256_of() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  elif command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+# Byte size of a file (fstat, does not read contents).
+file_size() { wc -c <"$1" | tr -d '[:space:]'; }
+
+# Download a single GGUF file from HF into target (resumable), verifying it
+# against the size and SHA256 that HF advertises for the file. Reuses a valid
+# cached copy. All output goes to stderr.
+#
+# HF's resolve endpoint 302-redirects LFS files (all GGUFs) to a CDN and, on
+# that 302, reports the file's real size in X-Linked-Size and its SHA256 (the
+# git-LFS OID) in X-Linked-Etag. We read those from a plain HEAD (no redirect
+# follow) and check the download against them — TLS covers the transfer, so
+# this mainly catches truncation and accidental corruption.
 hf_download() {
   local repo="$1" file="$2" target="$3"
-  local magic
+  local url="https://huggingface.co/$repo/resolve/main/$file"
 
+  # One metadata request: final status, advertised size, advertised SHA256.
+  local headers http_status expected_size expected_sha
+  headers="$(curl -sI "$url")" || headers=""
+  http_status="$(printf '%s\n' "$headers" | grep -i '^HTTP/' | tail -1 | awk '{print $2}')"
+  [[ "$http_status" == 200 || "$http_status" == 302 ]] ||
+    die "file not found on HF (HTTP ${http_status:-000}): $repo/$file"
+  expected_sha="$(printf '%s\n' "$headers" | grep -i '^x-linked-etag:' | head -1 |
+    sed -E 's/.*"([0-9a-fA-F]{64})".*/\1/;t;d')"
+  # X-Linked-Size on the 302 (LFS); Content-Length for a direct 200 (non-LFS).
+  expected_size="$(printf '%s\n' "$headers" | grep -i '^x-linked-size:' | head -1 |
+    sed -E 's/^[^:]+:[[:space:]]*([0-9]+).*/\1/')"
+  [[ -n "$expected_size" ]] || expected_size="$(printf '%s\n' "$headers" |
+    grep -i '^content-length:' | head -1 | sed -E 's/^[^:]+:[[:space:]]*([0-9]+).*/\1/')"
+
+  # Decide what to do with an existing file: reuse it if complete, resume it if
+  # it is a shorter prefix, discard it otherwise. Size vs. the advertised size
+  # catches the truncated downloads the magic check alone missed. (Full SHA256
+  # is checked on fresh downloads below; re-hashing multi-GB cached files on
+  # every launch would be too slow.)
   if [[ -f "$target" ]]; then
-    # NOTE: Not smart enough to detect truncated downloads.
+    local local_size magic
+    local_size="$(file_size "$target")"
     magic="$(head -c 4 "$target")" || true
-    if [[ "$magic" == "GGUF" ]]; then
+    if [[ "$magic" == "GGUF" && ( -z "$expected_size" || "$local_size" == "$expected_size" ) ]]; then
       info "cached:" "$file" >&2
       return
+    elif [[ "$magic" == "GGUF" && -n "$expected_size" && "$local_size" -lt "$expected_size" ]]; then
+      info "resume:" "$file ($local_size/$expected_size bytes)" >&2
+    else
+      rm -f "$target"
+      info "removed:" "invalid cached file, re-downloading" >&2
     fi
-    rm -f "$target"
-    info "removed:" "invalid cached file, re-downloading" >&2
   fi
-
-  local url="https://huggingface.co/$repo/resolve/main/$file"
-  local http_code
-  http_code="$(curl -sfI -o /dev/null -w '%{http_code}' "$url")" || http_code="000"
-  [[ "$http_code" == 200 || "$http_code" == 302 ]] ||
-    die "file not found on HF (HTTP $http_code): $repo/$file"
 
   info "download:" "$file" >&2
   mkdir -p "$(dirname "$target")"
   curl -L -C - --progress-bar -o "$target" "$url" ||
     die "failed to download $repo/$file"
 
+  local magic
   magic="$(head -c 4 "$target")" || true
   [[ "$magic" == "GGUF" ]] || {
     rm -f "$target"
     die "downloaded file is not a valid GGUF: $repo/$file"
   }
+
+  local local_size
+  local_size="$(file_size "$target")"
+  if [[ -n "$expected_size" && "$local_size" != "$expected_size" ]]; then
+    rm -f "$target"
+    die "size mismatch for $repo/$file (got $local_size, expected $expected_size)"
+  fi
+
+  if [[ -n "$expected_sha" ]]; then
+    local actual_sha
+    if actual_sha="$(sha256_of "$target")"; then
+      [[ "$actual_sha" == "$expected_sha" ]] || {
+        rm -f "$target"
+        die "SHA256 mismatch for $repo/$file (got $actual_sha, expected $expected_sha)"
+      }
+      info "verified:" "$file (sha256)" >&2
+    else
+      info "warning:" "no sha256 tool; skipped hash verification of $file" >&2
+    fi
+  fi
 }
 
 # Resolve a model spec to a local GGUF file path, downloading from HF as needed.
