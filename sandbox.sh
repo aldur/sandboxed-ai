@@ -16,10 +16,19 @@ PROJECT_DIR="${SANDBOXED_AI_HOME:-$PWD}"
 
 # ── Defaults ──────────────────────────────────────────────
 PORT=8080
-STATE_DIR="$PROJECT_DIR/.opencode"
+# Writable state for every subcommand (llama-state, caches, each tool's
+# redirected HOME/XDG dirs).
+STATE_DIR="$PROJECT_DIR/.sandboxed-ai"
 CACHE_DIR="$STATE_DIR/cache"
 TMPDIR="$STATE_DIR/tmp"
 MODELS_DIR="$PROJECT_DIR/models"
+
+# Shared curl timeout flags so a hung/slow HF endpoint can't stall a launch.
+# Metadata requests are small → a hard overall cap; the model download only caps
+# connect time, since the transfer itself is legitimately long.
+readonly CURL_CONNECT_TIMEOUT=10
+readonly CURL_META_OPTS=(--connect-timeout "$CURL_CONNECT_TIMEOUT" --max-time 30)
+readonly CURL_DOWNLOAD_OPTS=(--connect-timeout "$CURL_CONNECT_TIMEOUT")
 
 # ── Helpers ───────────────────────────────────────────────
 die() {
@@ -179,7 +188,7 @@ hf_download() {
 
   # One metadata request: final status, advertised size, advertised SHA256.
   local headers http_status expected_size expected_sha
-  headers="$(curl -sI "$url")" || headers=""
+  headers="$(curl -sI "${CURL_META_OPTS[@]}" "$url")" || headers=""
   http_status="$(printf '%s\n' "$headers" | grep -i '^HTTP/' | tail -1 | awk '{print $2}')"
   [[ "$http_status" == 200 || "$http_status" == 302 ]] ||
     die "file not found on HF (HTTP ${http_status:-000}): $repo/$file"
@@ -200,7 +209,7 @@ hf_download() {
     local local_size magic
     local_size="$(file_size "$target")"
     magic="$(head -c 4 "$target")" || true
-    if [[ "$magic" == "GGUF" && ( -z "$expected_size" || "$local_size" == "$expected_size" ) ]]; then
+    if [[ "$magic" == "GGUF" && (-z "$expected_size" || "$local_size" == "$expected_size") ]]; then
       info "cached:" "$file" >&2
       return
     elif [[ "$magic" == "GGUF" && -n "$expected_size" && "$local_size" -lt "$expected_size" ]]; then
@@ -213,7 +222,7 @@ hf_download() {
 
   info "download:" "$file" >&2
   mkdir -p "$(dirname "$target")"
-  curl -L -C - --progress-bar -o "$target" "$url" ||
+  curl -L -C - "${CURL_DOWNLOAD_OPTS[@]}" --progress-bar -o "$target" "$url" ||
     die "failed to download $repo/$file"
 
   local magic
@@ -276,7 +285,7 @@ resolve_model() {
 
   # GGUF files available in the repo (rfilenames, may include subfolders).
   local listing
-  listing="$(curl -sf "https://huggingface.co/api/models/$repo" |
+  listing="$(curl -sf "${CURL_META_OPTS[@]}" "https://huggingface.co/api/models/$repo" |
     grep -o '"rfilename":"[^"]*\.gguf"' |
     sed 's/"rfilename":"//;s/"//')" || listing=""
 
@@ -468,9 +477,17 @@ read_llama_state_field() {
 }
 
 # Generate opencode.json in the given directory from llama-server state.
+# This overwrites $target_dir/opencode.json on every launch to point opencode at
+# the local llama-server. To avoid silently destroying a user's own config in a
+# custom workspace (-w), a pre-existing file we did not generate is preserved
+# once as opencode.json.bak. "Ours" is recognised by hashing the last file we
+# wrote (recorded in a sentinel under STATE_DIR), so regenerating our own config
+# never triggers a spurious backup.
 generate_opencode_config() {
   local target_dir="$1"
   local state_file="$STATE_DIR/llama-state"
+  local config="$target_dir/opencode.json"
+  local sentinel="$STATE_DIR/opencode-json.sha"
 
   [[ -f "$state_file" ]] || die "no llama-server state found — start llama first"
 
@@ -478,7 +495,22 @@ generate_opencode_config() {
   LLAMA_ALIAS="$(read_llama_state_field "$state_file" LLAMA_ALIAS '^[A-Za-z0-9._-]+$')"
   LLAMA_PORT="$(read_llama_state_field "$state_file" LLAMA_PORT '^[0-9]+$')"
 
-  cat >"$target_dir/opencode.json" <<EOF
+  # Preserve a foreign/edited opencode.json before clobbering it.
+  if [[ -f "$config" ]]; then
+    local cur_sha last_sha=""
+    cur_sha="$(sha256_of "$config" 2>/dev/null || true)"
+    [[ -f "$sentinel" ]] && last_sha="$(cat "$sentinel")"
+    if [[ -n "$cur_sha" && "$cur_sha" != "$last_sha" ]]; then
+      if [[ -e "$config.bak" ]]; then
+        info "warning:" "overwriting opencode.json (opencode.json.bak already exists)" >&2
+      else
+        cp "$config" "$config.bak"
+        info "backed up:" "your opencode.json → opencode.json.bak" >&2
+      fi
+    fi
+  fi
+
+  cat >"$config" <<EOF
 {
   "\$schema": "https://opencode.ai/config.json",
   "model": "llama/$LLAMA_ALIAS",
@@ -501,6 +533,9 @@ generate_opencode_config() {
   "autoupdate": false
 }
 EOF
+
+  # Record what we just wrote so the next launch recognises it as ours.
+  sha256_of "$config" >"$sentinel" 2>/dev/null || true
 }
 
 # ── Subcommands ───────────────────────────────────────────
@@ -731,6 +766,11 @@ cmd_llm() {
   export OPENAI_API_KEY="${OPENAI_API_KEY:-dummy}"
   mkdir -p "$LLM_USER_PATH" "$TMPDIR"
   export TMPDIR
+  # Root HOME inside the sandboxed state dir (as cmd_pi does) so incidental
+  # HOME-based reads/writes land in an allowed, contained path instead of the
+  # real home. llm's own storage is LLM_USER_PATH (set above), so this only
+  # affects framework/library HOME lookups. The dir is already sandbox-granted.
+  export HOME="$LLM_USER_PATH"
 
   # Default to llama-server model if no -m flag given
   echo "llama-server" >"$LLM_USER_PATH/default_model.txt"
