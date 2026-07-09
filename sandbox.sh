@@ -354,6 +354,21 @@ resolve_user_dirs() {
     die "cannot resolve Darwin user cache dir (getconf DARWIN_USER_CACHE_DIR)"
 }
 
+# Raise the open-file soft limit toward the hard limit. opencode and pi are
+# Node apps that can open many descriptors, but INT_MAX is meaningless: the
+# kernel caps effective fds at the hard limit and kern.maxfilesperproc anyway.
+# Best-effort — never fail the launch over it (hence the `|| return`, so it
+# doesn't trip set -e).
+raise_fd_limit() {
+  local hard
+  hard="$(ulimit -Hn 2>/dev/null)" || return 0
+  if [[ "$hard" == unlimited ]]; then
+    ulimit -Sn 65536 2>/dev/null || return 0
+  else
+    ulimit -Sn "$hard" 2>/dev/null || return 0
+  fi
+}
+
 # Detect the package store prefix from a binary path.
 # Returns /nix for Nix, /opt/homebrew for Homebrew.
 pkg_store_for() {
@@ -543,7 +558,7 @@ cmd_opencode() {
   local opencode_bin
   opencode_bin="$(resolve_binary "${OPENCODE:-}" "opencode")"
 
-  ulimit -n 2147483646
+  raise_fd_limit
 
   # cd to an allowed dir so opencode's getcwd() succeeds inside the sandbox
   cd "$workspace"
@@ -616,7 +631,7 @@ cmd_pi() {
   info "workspace:" "$workspace"
   printf '\n'
 
-  ulimit -n 2147483646
+  raise_fd_limit
 
   # cd to an allowed dir so pi's getcwd() succeeds inside the sandbox
   cd "$workspace"
