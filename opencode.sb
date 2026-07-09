@@ -37,13 +37,15 @@
   (global-name "com.apple.CoreServices.coreservicesd")
   (global-name "com.apple.SystemConfiguration.configd")
   ;; Terminal / TUI rawmode
-  (global-name "com.apple.iohideventsystem")
   (global-name "com.apple.windowserver.active"))
 
-;; ── IOKit (terminal keyboard input) ──────────────────────
-(allow iokit-open
-  (iokit-user-client-class "IOHIDLibUserClient")
-  (iokit-user-client-class "IOHIDEventSystemUserClient"))
+;; ── IOKit (HID) — intentionally NOT granted ──────────────
+;; A TUI running inside a terminal emulator reads input as bytes from its pty
+;; (see the TTY block) and queries capabilities via ANSI escapes; it does not
+;; need the IOKit HID path. IOHIDEventSystemUserClient + com.apple.iohideventsystem
+;; would expose the global HID event stream (every keystroke on the machine, not
+;; just this app's) — an observation channel outside the workspace — so they stay
+;; denied by the default-deny policy.
 
 ;; ── Sysctl ───────────────────────────────────────────────
 (allow sysctl-read sysctl-write
