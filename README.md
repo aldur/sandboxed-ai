@@ -34,7 +34,9 @@ brew install llama.cpp
 
 The sandbox is default-deny and only allows access to the GPU and the models.
 Network access is disabled for `llama-server`. Models are downloaded through
-`curl` (outside of the sandbox).
+`curl` (outside of the sandbox). For multimodal models, the matching `mmproj`
+(vision/audio projector) file is detected in the repo, downloaded alongside the
+weights, and passed to `llama-server` via `--mmproj` automatically.
 
 ```bash
 # Install opencode or use `nix develop`

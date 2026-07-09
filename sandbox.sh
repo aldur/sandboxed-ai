@@ -308,7 +308,35 @@ resolve_model() {
     [[ -z "$first" ]] && first="$target"
   done
 
-  printf '%s' "$first"
+  # Multimodal models ship a separate mmproj (vision/audio projector) GGUF
+  # next to the weights, conventionally named *mmproj*. Fetch it too so the
+  # caller can launch llama-server with --mmproj automatically.
+  local mmproj_first=""
+  local -a mmproj_candidates=()
+  for f in "${all[@]}"; do
+    [[ "${f##*/}" == *[mM][mM][pP][rR][oO][jJ]* ]] || continue
+    # Never treat a file already chosen as the main model as the projector.
+    local w is_main=""
+    for w in "${want[@]}"; do [[ "$w" == "$f" ]] && is_main=1 && break; done
+    [[ -n "$is_main" ]] || mmproj_candidates+=("$f")
+  done
+  if [[ ${#mmproj_candidates[@]} -gt 0 ]]; then
+    # Prefer an f16-class projector (the common default); else first by name.
+    local mmproj=""
+    for f in "${mmproj_candidates[@]}"; do
+      [[ "${f##*/}" == *[fF]16* ]] && mmproj="$f" && break
+    done
+    [[ -n "$mmproj" ]] ||
+      mmproj="$(printf '%s\n' "${mmproj_candidates[@]}" | LC_ALL=C sort | head -1)"
+    info "mmproj:" "$mmproj" >&2
+    target="$MODELS_DIR/$repo/$mmproj"
+    hf_download "$repo" "$mmproj" "$target"
+    mmproj_first="$target"
+  fi
+
+  # Line 1: model path. Line 2 (optional): mmproj path.
+  printf '%s\n' "$first"
+  [[ -n "$mmproj_first" ]] && printf '%s\n' "$mmproj_first"
 }
 
 # Locate an executable.
@@ -478,14 +506,25 @@ cmd_llama() {
 
   [[ -n "${MODEL:-}" ]] || die "no model specified — use --model or set MODEL env var"
 
-  local model_path
-  model_path="$(resolve_model "$MODEL")"
+  # resolve_model prints the model path on line 1 and, for a multimodal model,
+  # the mmproj (projector) path on line 2.
+  local resolved
+  resolved="$(resolve_model "$MODEL")"
+  local model_path="${resolved%%$'\n'*}"
+  local mmproj_path=""
+  [[ "$resolved" == *$'\n'* ]] && mmproj_path="${resolved#*$'\n'}"
 
   local llama_server
   llama_server="$(resolve_binary "${LLAMA_SERVER:-}" "llama-server")"
 
   local model_dir
   model_dir="$(dirname "$model_path")"
+
+  # Directory the sandbox must also read for the projector. Falls back to the
+  # model dir (a harmless duplicate) when there is no mmproj, so the profile's
+  # param is always a valid path.
+  local mmproj_dir="$model_dir"
+  [[ -n "$mmproj_path" ]] && mmproj_dir="$(dirname "$mmproj_path")"
 
   local alias
   alias="$(basename "$model_dir")"
@@ -494,9 +533,15 @@ cmd_llama() {
   export TMPDIR
   write_llama_state "$alias"
 
+  # llama-server flags: add --mmproj only for a multimodal model.
+  local -a llama_args=(--model "$model_path" --alias "$alias" --port "$PORT")
+  [[ -n "$mmproj_path" ]] && llama_args+=(--mmproj "$mmproj_path")
+  llama_args+=("${extra_args[@]}")
+
   printf 'Starting sandboxed llama-server:\n'
   info "binary:" "$llama_server"
   info "model:" "$model_path"
+  [[ -n "$mmproj_path" ]] && info "mmproj:" "$mmproj_path"
   info "alias:" "$alias"
   info "port:" "$PORT"
   info "extra:" "${extra_args[*]:-none}"
@@ -512,15 +557,13 @@ cmd_llama() {
     -D USER_CACHE="$USER_CACHE" \
     -D LLAMA_SERVER="$llama_server" \
     -D MODEL_DIR="$model_dir" \
+    -D MMPROJ_DIR="$mmproj_dir" \
     -D CACHE_DIR="$CACHE_DIR" \
     -D TMPDIR="$TMPDIR" \
     -D NET_ADDR="*:$PORT" \
     -f "$SCRIPT_DIR/llama-server.sb" \
     "$llama_server" \
-    --model "$model_path" \
-    --alias "$alias" \
-    --port "$PORT" \
-    "${extra_args[@]}"
+    "${llama_args[@]}"
 }
 
 cmd_opencode() {

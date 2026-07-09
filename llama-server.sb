@@ -51,9 +51,11 @@
   (subpath "/Library/GPUBundles")
   (subpath "/System/Library/GPUBundles"))
 
-;; Model weights (read-only)
+;; Model weights (read-only). MMPROJ_DIR holds the multimodal projector; it
+;; equals MODEL_DIR when the model is not multimodal (a harmless duplicate).
 (allow file-read*
-  (subpath (param "MODEL_DIR")))
+  (subpath (param "MODEL_DIR"))
+  (subpath (param "MMPROJ_DIR")))
 
 ;; Metal shader / PSO cache + local temp
 (allow file-read* file-write* file-lock
