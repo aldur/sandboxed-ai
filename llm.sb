@@ -20,12 +20,17 @@
   (subpath (param "TMPDIR")))
 
 ;; ── CoreFoundation / preferences ─────────────────────────
-(allow user-preference-read)
+;; Only the global domain (locale/region etc. that CoreFoundation reads on
+;; startup), not every application's preference plist.
+(allow user-preference-read
+  (preference-domain "kCFPreferencesAnyApplication"))
 
 ;; ── Network config + TLS ─────────────────────────────────
+;; Metadata on just the two directories (for path traversal to the files read
+;; below), not the whole /etc tree.
 (allow file-read-metadata
-  (subpath "/etc")
-  (subpath "/private/etc"))
+  (literal "/etc")
+  (literal "/private/etc"))
 (allow file-read*
   (literal "/private/etc/hosts")
   (subpath "/private/etc/ssl")
