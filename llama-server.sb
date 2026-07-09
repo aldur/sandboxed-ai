@@ -99,4 +99,8 @@
 (allow network-bind network-inbound
   (local tcp (param "NET_ADDR")))
 
-(deny network-outbound (with send-signal SIGKILL))
+;; Outbound is already denied by (deny default); state it explicitly. A plain
+;; deny fails the connection and lets the caller handle it — not SIGKILL, which
+;; would terminate the server outright if any linked library ever made a benign
+;; outbound attempt (a stray probe would kill inference mid-run).
+(deny network-outbound)
