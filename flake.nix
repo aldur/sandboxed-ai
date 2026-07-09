@@ -107,6 +107,7 @@
           fileset = pkgs.lib.fileset.unions [
             ./sandbox.sh
             ./common.sb
+            ./agent.sb
             ./llama-server.sb
             ./llm.sb
             ./opencode.sb
@@ -122,7 +123,7 @@
           runHook preInstall
           libexec=$out/libexec/sandboxed-ai
           install -Dm755 sandbox.sh $libexec/sandbox.sh
-          install -m444 common.sb llama-server.sb llm.sb opencode.sb pi.sb $libexec/
+          install -m444 common.sb agent.sb llama-server.sb llm.sb opencode.sb pi.sb $libexec/
           makeWrapper $libexec/sandbox.sh $out/bin/sandboxed-ai \
             --set SANDBOXED_AI_PROG sandboxed-ai \
             --set PI_LLAMA_DIR ${pi-llama} \

@@ -638,6 +638,7 @@ cmd_opencode() {
 
   exec sandbox-exec \
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
+    -D AGENT_SB="$SCRIPT_DIR/agent.sb" \
     -D PKG_STORE="$(pkg_store_for "$opencode_bin")" \
     -D USER_TMP="$USER_TMP" \
     -D USER_CACHE="$USER_CACHE" \
@@ -712,6 +713,7 @@ cmd_pi() {
 
   exec sandbox-exec \
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
+    -D AGENT_SB="$SCRIPT_DIR/agent.sb" \
     -D PKG_STORE="$(pkg_store_for "$pi_bin")" \
     -D USER_TMP="$USER_TMP" \
     -D USER_CACHE="$USER_CACHE" \
