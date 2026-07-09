@@ -63,10 +63,11 @@
 (allow file-read* file-write*
   (subpath (param "WORKSPACE")))
 
-;; ── Shared memory + semaphores ───────────────────────────
-(allow ipc-posix-shm-read-data ipc-posix-shm-write-data ipc-posix-shm-write-create
-  (ipc-posix-name-prefix "com.apple."))
-
+;; ── Semaphores ───────────────────────────────────────────
+;; No POSIX shared-memory grant: opencode and pi were verified to run without
+;; the broad `com.apple.` shm access this profile used to allow (unlike GPU work
+;; in llama-server.sb, they open no com.apple.* shm segment), so it is not
+;; carried — a default-deny shm_open() returns an error the frameworks tolerate.
 (allow ipc-posix-sem-open
        ipc-posix-sem-post
        ipc-posix-sem-wait)
