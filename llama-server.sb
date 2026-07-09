@@ -72,11 +72,16 @@
 
 ;; ── Sandbox extensions for MTLCompilerService ──────────
 ;; Metal shader compilation runs in an XPC service (MTLCompilerService).
-;; It needs sandbox extensions issued by llama-server to access paths.
+;; It needs sandbox extensions issued by llama-server to access paths. Scope the
+;; issued extension to this user's temp/cache dirs (where the shader cache
+;; lives), not all of /private/var/folders — matching common.sb's scoping and
+;; keeping the delegation off every other user's and daemon's temp state.
 (allow file-issue-extension
   (require-all
     (extension-class "com.apple.app-sandbox.read-write")
-    (subpath "/private/var/folders")))
+    (require-any
+      (subpath (param "USER_TMP"))
+      (subpath (param "USER_CACHE")))))
 
 ;; ── Shared memory (Metal command buffers) ────────────────
 (allow ipc-posix-shm-read-data
@@ -90,7 +95,7 @@
 ;; Seatbelt only permits "*" or "localhost" as the host in a network
 ;; address. This allows binding/accepting that port on any interface (loopback
 ;; for host clients, the vmnet bridge for containers). Outbound stays denied
-;; below. `llama-server` by default binds to localhost. 
+;; below. `llama-server` by default binds to localhost.
 (allow network-bind network-inbound
   (local tcp (param "NET_ADDR")))
 
