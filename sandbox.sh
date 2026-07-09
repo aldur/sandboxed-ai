@@ -373,7 +373,11 @@ EOF
 
 # ── Subcommands ───────────────────────────────────────────
 cmd_llama() {
-  # Extract --model, pass everything else through to llama-server
+  # Extract --model and --port, pass everything else through to llama-server.
+  # --port must be intercepted (not passed through): the sandbox profile, the
+  # bind address, and the recorded state all key off $PORT, and the exec below
+  # already appends `--port "$PORT"`. Letting it fall into extra_args would bind
+  # a port the sandbox denies and leave state pointing at the wrong one.
   local extra_args=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -381,12 +385,22 @@ cmd_llama() {
       MODEL="$2"
       shift 2
       ;;
+    --port)
+      PORT="$2"
+      shift 2
+      ;;
+    --port=*)
+      PORT="${1#--port=}"
+      shift
+      ;;
     *)
       extra_args+=("$1")
       shift
       ;;
     esac
   done
+
+  [[ "$PORT" =~ ^[0-9]+$ ]] || die "invalid --port: $PORT (must be a number)"
 
   [[ -n "${MODEL:-}" ]] || die "no model specified — use --model or set MODEL env var"
 
