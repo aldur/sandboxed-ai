@@ -1,5 +1,6 @@
 ; vim:ft=scheme
-;; common.sb — shared sandbox rules, imported by llama-server.sb, opencode.sb, and llm.sb
+;; common.sb — base sandbox rules shared by every profile. Imported directly by
+;; llama-server.sb, llm.sb, and agent.sb (which opencode.sb and pi.sb import).
 
 (import "system.sb")
 (import "com.apple.corefoundation.sb")
