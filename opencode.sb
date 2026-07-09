@@ -62,7 +62,10 @@
 ;; denied by the default-deny policy.
 
 ;; ── Sysctl ───────────────────────────────────────────────
-(allow sysctl-read sysctl-write
+;; Read-only: libuv reads kern.maxfilesperproc to size fd tables. Writing it is
+;; a system-wide change (needs root — a sandboxed non-root write EPERMs anyway),
+;; so the write grant was dead weight and is not carried.
+(allow sysctl-read
   (sysctl-name "kern.maxfilesperproc"))
 
 ;; ── TTY (TUI rawmode) ────────────────────────────────────
