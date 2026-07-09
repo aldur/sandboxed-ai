@@ -293,9 +293,18 @@ resolve_model() {
   local line
   while IFS= read -r line; do [[ -n "$line" ]] && all+=("$line"); done <<<"$listing"
 
+  # Files eligible as the MAIN model: everything except projector (mmproj)
+  # files, so a quant label like :Q8_0 doesn't also match the mmproj — which is
+  # resolved separately below. An explicit mmproj filename still works: it just
+  # falls through select_gguf_files' literal-name path.
+  local -a main_files=()
+  for line in "${all[@]}"; do
+    [[ "${line##*/}" == *[mM][mM][pP][rR][oO][jJ]* ]] || main_files+=("$line")
+  done
+
   info "resolving:" "$repo:$sel" >&2
   local files_out
-  files_out="$(select_gguf_files "$repo" "$sel" "${all[@]}")" || exit 1
+  files_out="$(select_gguf_files "$repo" "$sel" "${main_files[@]}")" || exit 1
 
   local -a want=()
   while IFS= read -r line; do [[ -n "$line" ]] && want+=("$line"); done <<<"$files_out"
@@ -337,6 +346,7 @@ resolve_model() {
   # Line 1: model path. Line 2 (optional): mmproj path.
   printf '%s\n' "$first"
   [[ -n "$mmproj_first" ]] && printf '%s\n' "$mmproj_first"
+  return 0
 }
 
 # Locate an executable.
