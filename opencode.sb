@@ -32,6 +32,20 @@
   (subpath "/Library/Developer/CommandLineTools")
   (subpath "/Applications/Xcode.app/Contents/Developer"))
 
+;; ── Git (exec only) ──────────────────────────────────────
+;; opencode shells out to git at startup and hard-crashes if the exec is
+;; denied (a denied spawn throws synchronously). Allowing the binary grants no
+;; new reach: git runs under this same profile, so it can only touch the
+;; workspace and cannot reach the network. /usr/bin/git and xcode-select are
+;; the macOS shims; the real git and its helper subprocesses (git-remote-*,
+;; pager, ...) live under the developer dir. No global ~/.gitconfig read is
+;; granted, so git stays workspace-scoped and no identity leaks in.
+(allow process-exec
+  (literal "/usr/bin/git")
+  (literal "/usr/bin/xcode-select")
+  (subpath "/Library/Developer/CommandLineTools")
+  (subpath "/Applications/Xcode.app/Contents/Developer"))
+
 ;; ── Mach (IPC) ───────────────────────────────────────────
 (allow mach-lookup
   (global-name "com.apple.CoreServices.coreservicesd")
