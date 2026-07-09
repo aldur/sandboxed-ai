@@ -296,6 +296,22 @@ LLAMA_PORT=$PORT
 EOF
 }
 
+# Read one field from the llama-state file, validating it against a pattern.
+# The state file lives under $STATE_DIR, which the sandboxed agents can write
+# (it is inside the opencode state dir and the default workspace). Sourcing it
+# would therefore let a compromised agent run arbitrary code on the host at the
+# next launch, unsandboxed. It is machine-written with two known fields, so
+# parse it strictly and reject anything that doesn't match.
+read_llama_state_field() {
+  local state_file="$1" key="$2" pattern="$3" line value
+  line="$(grep -m1 "^${key}=" "$state_file")" ||
+    die "missing $key in $state_file"
+  value="${line#*=}"
+  [[ "$value" =~ $pattern ]] ||
+    die "invalid $key in $state_file: $value"
+  printf '%s' "$value"
+}
+
 # Generate opencode.json in the given directory from llama-server state.
 generate_opencode_config() {
   local target_dir="$1"
@@ -304,8 +320,8 @@ generate_opencode_config() {
   [[ -f "$state_file" ]] || die "no llama-server state found — start llama first"
 
   local LLAMA_ALIAS LLAMA_PORT
-  # shellcheck source=/dev/null
-  source "$state_file"
+  LLAMA_ALIAS="$(read_llama_state_field "$state_file" LLAMA_ALIAS '^[A-Za-z0-9._-]+$')"
+  LLAMA_PORT="$(read_llama_state_field "$state_file" LLAMA_PORT '^[0-9]+$')"
 
   cat >"$target_dir/opencode.json" <<EOF
 {
@@ -460,10 +476,7 @@ cmd_pi() {
   # llama-server subcommand recorded so it matches a running instance.
   local llama_port="$PORT"
   if [[ -f "$STATE_DIR/llama-state" ]]; then
-    local LLAMA_ALIAS LLAMA_PORT
-    # shellcheck source=/dev/null
-    source "$STATE_DIR/llama-state"
-    llama_port="$LLAMA_PORT"
+    llama_port="$(read_llama_state_field "$STATE_DIR/llama-state" LLAMA_PORT '^[0-9]+$')"
   fi
 
   # pi keeps its state under ~/.pi, so root HOME inside the project dir to keep
