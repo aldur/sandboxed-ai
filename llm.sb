@@ -26,11 +26,14 @@
   (preference-domain "kCFPreferencesAnyApplication"))
 
 ;; ── Network config + TLS ─────────────────────────────────
-;; Metadata on just the two directories (for path traversal to the files read
-;; below), not the whole /etc tree.
+;; Metadata for path traversal — kept as subpaths, not literals: on nix-darwin
+;; Python stat()s nested paths at startup — /run/current-system and, under
+;; /private/etc, the per-user profile and the static-etc tree that /etc symlinks
+;; resolve through — so narrowing to the two literals denies those and breaks llm.
 (allow file-read-metadata
-  (literal "/etc")
-  (literal "/private/etc"))
+  (subpath "/etc")
+  (subpath "/private/etc")
+  (subpath "/run"))
 (allow file-read*
   (literal "/private/etc/hosts")
   (subpath "/private/etc/ssl")
