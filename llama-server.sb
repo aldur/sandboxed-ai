@@ -62,6 +62,14 @@
   (subpath (param "CACHE_DIR"))
   (subpath (param "TMPDIR")))
 
+;; Metal shader compilation maps the compiled shader binaries executable out of
+;; the per-user temp/cache dirs. common.sb grants read/write/lock there for all
+;; tools but withholds executable mapping (see its note); Metal is the only
+;; consumer that needs it, so the grant lives here, in the llama-server profile.
+(allow file-map-executable
+  (subpath (param "USER_TMP"))
+  (subpath (param "USER_CACHE")))
+
 ;; ── Sandbox extensions for MTLCompilerService ──────────
 ;; Metal shader compilation runs in an XPC service (MTLCompilerService).
 ;; It needs sandbox extensions issued by llama-server to access paths.

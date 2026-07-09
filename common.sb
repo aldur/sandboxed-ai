@@ -40,13 +40,18 @@
 ;; ── NSTemporaryDirectory ──────────────────────────────────
 ;; Apple frameworks (Metal, CoreFoundation) use confstr(_CS_DARWIN_USER_TEMP_DIR)
 ;; and _CS_DARWIN_USER_CACHE_DIR, which resolve to /private/var/folders/.../T/
-;; and .../C/. These cannot be redirected via TMPDIR. file-map-executable is
-;; needed for Metal shader compilation. Scoped to this user's two dirs (passed
-;; by sandbox.sh from getconf) rather than all of /private/var/folders, which
-;; also holds every other user's and the system daemons' temp state. These
+;; and .../C/. These cannot be redirected via TMPDIR. Scoped to this user's two
+;; dirs (passed by sandbox.sh from getconf) rather than all of /private/var/folders,
+;; which also holds every other user's and the system daemons' temp state. These
 ;; dirs are still shared with the user's other non-sandboxed processes — the
 ;; per-user temp dir cannot be isolated further.
-(allow file-read* file-write* file-map-executable file-lock
+;;
+;; file-map-executable is deliberately NOT granted here: only Metal shader
+;; compilation maps compiled binaries executable out of these dirs, so that
+;; capability is scoped to llama-server.sb. The coding agents (opencode/pi/llm)
+;; write framework temp/cache here but never map it executable — withholding it
+;; removes a plant-an-executable channel into the shared per-user dirs.
+(allow file-read* file-write* file-lock
   (subpath (param "USER_TMP"))
   (subpath (param "USER_CACHE"))
 )
