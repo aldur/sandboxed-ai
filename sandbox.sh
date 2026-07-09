@@ -460,6 +460,13 @@ cmd_opencode() {
 
   generate_opencode_config "$workspace"
 
+  # Allow the sandbox to reach the same port the generated config points at
+  # (the running llama-server's, recorded in state; fall back to the default).
+  local llama_port="$PORT"
+  if [[ -f "$STATE_DIR/llama-state" ]]; then
+    llama_port="$(read_llama_state_field "$STATE_DIR/llama-state" LLAMA_PORT '^[0-9]+$')"
+  fi
+
   local opencode_bin
   opencode_bin="$(resolve_binary "${OPENCODE:-}" "opencode")"
 
@@ -475,6 +482,7 @@ cmd_opencode() {
     -D USER_CACHE="$USER_CACHE" \
     -D WORKSPACE="$workspace" \
     -D OPENCODE_DIR="$STATE_DIR" \
+    -D NET_ADDR="localhost:$llama_port" \
     -f "$SCRIPT_DIR/opencode.sb" \
     "$opencode_bin" "$@"
 }
@@ -562,6 +570,13 @@ cmd_llm() {
   # Default to llama-server model if no -m flag given
   echo "llama-server" >"$LLM_USER_PATH/default_model.txt"
 
+  # Allow the sandbox to reach a running llama-server's port (from state; fall
+  # back to the default, which matches the llm-llama-server plugin's default).
+  local llama_port="$PORT"
+  if [[ -f "$STATE_DIR/llama-state" ]]; then
+    llama_port="$(read_llama_state_field "$STATE_DIR/llama-state" LLAMA_PORT '^[0-9]+$')"
+  fi
+
   local llm_bin
   llm_bin="$(resolve_binary "${LLM:-}" "llm")"
 
@@ -574,6 +589,7 @@ cmd_llm() {
     -D USER_CACHE="$USER_CACHE" \
     -D LLM_USER_PATH="$LLM_USER_PATH" \
     -D TMPDIR="$TMPDIR" \
+    -D NET_ADDR="localhost:$llama_port" \
     -f "$SCRIPT_DIR/llm.sb" \
     "$llm_bin" "$@"
 }

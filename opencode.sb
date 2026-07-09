@@ -69,7 +69,7 @@
 
 ;; ── Network: localhost llama-server only ──────────────────
 (allow network-outbound
-  (remote tcp "localhost:8080"))
+  (remote tcp (param "NET_ADDR")))
 
 ;; ── System libs (locale + timezone + devices) ────────────
 (allow file-read*
