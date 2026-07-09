@@ -56,10 +56,13 @@
   (sysctl-name "kern.maxfilesperproc"))
 
 ;; ── TTY (TUI rawmode) ────────────────────────────────────
+;; /dev/tty is the per-process controlling-terminal magic file — it always
+;; resolves to this process's own tty, so it is self-scoped. TTY_DEV (from
+;; sandbox.sh) is this session's concrete slave device, pinned so a compromised
+;; agent cannot read or write another terminal session's /dev/ttysN.
 (allow file-read* file-write* file-ioctl
-  (subpath "/dev/tty")
-  (subpath "/dev/pty")
-  (regex #"^/dev/ttys[0-9]+$"))
+  (literal "/dev/tty")
+  (literal (param "TTY_DEV")))
 
 ;; ── Workspace: full read + write ─────────────────────────
 (allow file-read* file-write*

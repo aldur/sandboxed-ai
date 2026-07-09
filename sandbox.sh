@@ -392,6 +392,26 @@ resolve_user_dirs() {
     die "cannot resolve Darwin user cache dir (getconf DARWIN_USER_CACHE_DIR)"
 }
 
+# Resolve this session's controlling terminal device (e.g. /dev/ttys003). The
+# TUI profiles pin their tty grant to this one device instead of the whole
+# /dev/ttys* class, which would expose every other terminal session's device to
+# a compromised agent (reading another session's input, injecting into it).
+# Probe stdin/stdout/stderr in turn — one of them is the terminal for an
+# interactive launch. Fall back to /dev/tty (the per-process controlling-terminal
+# magic file, always self-scoped) when there is no tty, so the param stays a
+# valid path and a non-interactive launch still works.
+TTY_DEV="/dev/tty"
+resolve_tty() {
+  local fd dev
+  for fd in 0 1 2; do
+    dev="$(tty <&"$fd" 2>/dev/null)" || continue
+    if [[ "$dev" == /dev/ttys[0-9]* ]]; then
+      TTY_DEV="$dev"
+      return
+    fi
+  done
+}
+
 # Raise the open-file soft limit toward the hard limit. opencode and pi are
 # Node apps that can open many descriptors, but INT_MAX is meaningless: the
 # kernel caps effective fds at the hard limit and kern.maxfilesperproc anyway.
@@ -623,6 +643,7 @@ cmd_opencode() {
     -D USER_CACHE="$USER_CACHE" \
     -D WORKSPACE="$workspace" \
     -D OPENCODE_DIR="$STATE_DIR" \
+    -D TTY_DEV="$TTY_DEV" \
     -D NET_ADDR="localhost:$llama_port" \
     -f "$SCRIPT_DIR/opencode.sb" \
     "$opencode_bin" "$@"
@@ -697,6 +718,7 @@ cmd_pi() {
     -D WORKSPACE="$workspace" \
     -D PI_DIR="$pi_home" \
     -D PI_LLAMA_DIR="$PI_LLAMA_DIR" \
+    -D TTY_DEV="$TTY_DEV" \
     -D NET_ADDR="localhost:$llama_port" \
     -f "$SCRIPT_DIR/pi.sb" \
     "$pi_bin" -e "$plugin" "$@"
@@ -730,6 +752,7 @@ cmd_llm() {
     -D USER_CACHE="$USER_CACHE" \
     -D LLM_USER_PATH="$LLM_USER_PATH" \
     -D TMPDIR="$TMPDIR" \
+    -D TTY_DEV="$TTY_DEV" \
     -D NET_ADDR="localhost:$llama_port" \
     -f "$SCRIPT_DIR/llm.sb" \
     "$llm_bin" "$@"
@@ -744,6 +767,11 @@ shift
 # Every sandboxed command imports common.sb, which needs these two params.
 case "$cmd" in
 llama-server | opencode | pi | llm) resolve_user_dirs ;;
+esac
+
+# The tty-using commands pin their sandbox tty grant to this session's device.
+case "$cmd" in
+opencode | pi | llm) resolve_tty ;;
 esac
 
 case "$cmd" in
