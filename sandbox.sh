@@ -272,6 +272,29 @@ resolve_binary() {
   die "$name not found on PATH. Install it or set ${name^^} env var."
 }
 
+# Resolve the current user's Darwin per-user temp and cache dirs (what getconf
+# calls DARWIN_USER_TEMP_DIR / DARWIN_USER_CACHE_DIR; confstr's
+# _CS_DARWIN_USER_TEMP_DIR / _CACHE_DIR). Apple frameworks (Metal,
+# CoreFoundation) write here and cannot be pointed elsewhere via TMPDIR.
+# Normalized to the /private prefix, since the sandbox does not resolve the
+# /var -> /private/var symlink. common.sb scopes its temp-dir grant to these.
+_darwin_user_dir() {
+  local d
+  d="$(getconf "$1" 2>/dev/null)" && [[ -n "$d" ]] || return 1
+  d="${d%/}"
+  [[ "$d" == /var/* ]] && d="/private$d"
+  printf '%s' "$d"
+}
+
+USER_TMP=""
+USER_CACHE=""
+resolve_user_dirs() {
+  USER_TMP="$(_darwin_user_dir DARWIN_USER_TEMP_DIR)" ||
+    die "cannot resolve Darwin user temp dir (getconf DARWIN_USER_TEMP_DIR)"
+  USER_CACHE="$(_darwin_user_dir DARWIN_USER_CACHE_DIR)" ||
+    die "cannot resolve Darwin user cache dir (getconf DARWIN_USER_CACHE_DIR)"
+}
+
 # Detect the package store prefix from a binary path.
 # Returns /nix for Nix, /opt/homebrew for Homebrew.
 pkg_store_for() {
@@ -397,6 +420,8 @@ cmd_llama() {
   exec sandbox-exec \
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
     -D PKG_STORE="$(pkg_store_for "$llama_server")" \
+    -D USER_TMP="$USER_TMP" \
+    -D USER_CACHE="$USER_CACHE" \
     -D LLAMA_SERVER="$llama_server" \
     -D MODEL_DIR="$model_dir" \
     -D CACHE_DIR="$CACHE_DIR" \
@@ -446,6 +471,8 @@ cmd_opencode() {
   exec sandbox-exec \
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
     -D PKG_STORE="$(pkg_store_for "$opencode_bin")" \
+    -D USER_TMP="$USER_TMP" \
+    -D USER_CACHE="$USER_CACHE" \
     -D WORKSPACE="$workspace" \
     -D OPENCODE_DIR="$STATE_DIR" \
     -f "$SCRIPT_DIR/opencode.sb" \
@@ -516,6 +543,8 @@ cmd_pi() {
   exec sandbox-exec \
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
     -D PKG_STORE="$(pkg_store_for "$pi_bin")" \
+    -D USER_TMP="$USER_TMP" \
+    -D USER_CACHE="$USER_CACHE" \
     -D WORKSPACE="$workspace" \
     -D PI_DIR="$pi_home" \
     -D PI_LLAMA_DIR="$PI_LLAMA_DIR" \
@@ -541,6 +570,8 @@ cmd_llm() {
   exec sandbox-exec \
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
     -D PKG_STORE="$(pkg_store_for "$llm_bin")" \
+    -D USER_TMP="$USER_TMP" \
+    -D USER_CACHE="$USER_CACHE" \
     -D LLM_USER_PATH="$LLM_USER_PATH" \
     -D TMPDIR="$TMPDIR" \
     -f "$SCRIPT_DIR/llm.sb" \
@@ -552,6 +583,12 @@ cmd_llm() {
 
 cmd="$1"
 shift
+
+# Every sandboxed command imports common.sb, which needs these two params.
+case "$cmd" in
+llama-server | opencode | pi | llm) resolve_user_dirs ;;
+esac
+
 case "$cmd" in
 llama-server) cmd_llama "$@" ;;
 opencode) cmd_opencode "$@" ;;

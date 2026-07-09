@@ -39,11 +39,16 @@
 
 ;; ── NSTemporaryDirectory ──────────────────────────────────
 ;; Apple frameworks (Metal, CoreFoundation) use confstr(_CS_DARWIN_USER_TEMP_DIR)
-;; which resolves to /private/var/folders/.../T/. This cannot be redirected
-;; via TMPDIR. file-map-executable is needed for Metal shader compilation.
-;; /var is a symlink to /private/var but the sandbox may not resolve it
+;; and _CS_DARWIN_USER_CACHE_DIR, which resolve to /private/var/folders/.../T/
+;; and .../C/. These cannot be redirected via TMPDIR. file-map-executable is
+;; needed for Metal shader compilation. Scoped to this user's two dirs (passed
+;; by sandbox.sh from getconf) rather than all of /private/var/folders, which
+;; also holds every other user's and the system daemons' temp state. These
+;; dirs are still shared with the user's other non-sandboxed processes — the
+;; per-user temp dir cannot be isolated further.
 (allow file-read* file-write* file-map-executable file-lock
-  (subpath "/private/var/folders")
+  (subpath (param "USER_TMP"))
+  (subpath (param "USER_CACHE"))
 )
 
 ;; ── Path traversal (stat on parent directories) ─────────
