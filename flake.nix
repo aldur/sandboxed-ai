@@ -92,7 +92,14 @@
       # `mlx_vlm.server`: OpenAI-compatible server for MLX *vision* models. Same
       # Metal-enabled package set; sandbox.sh picks it automatically for models
       # whose config carries a vision tower.
-      mlx-vlm = mlxPython.pkgs.toPythonApplication mlxPython.pkgs.mlx-vlm;
+      mlx-vlm = mlxPython.pkgs.toPythonApplication (
+        mlxPython.pkgs.mlx-vlm.overrideAttrs (old: {
+          propagatedBuildInputs = (old.propagatedBuildInputs or [ ]) ++ [
+            mlxPython.pkgs.torch
+            mlxPython.pkgs.torchvision
+          ];
+        })
+      );
 
       # `pi` bundled with the pinned huggingface/pi-llama llama.cpp plugin
       # (auto-loaded via `pi -e <store>/index.ts` — no `pi install`, no
