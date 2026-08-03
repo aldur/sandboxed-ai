@@ -109,7 +109,11 @@ llm options:
   default model is preset to "llama-server").
 
 Environment:
-  SANDBOXED_AI_HOME  Root for writable state and models (default: current dir)
+  XDG_STATE_HOME     Parent of the per-user dir holding models, caches and
+                     each tool's home (default: ~/.local/state)
+  SANDBOXED_AI_MODELS
+                     Model directory, for weights on another volume
+                     (default: $XDG_STATE_HOME/sandboxed-ai/models)
   SANDBOXED_AI_PROG  Program name shown in this help (set by the Nix wrapper)
   MODEL              Model spec (overridden by --model)
   MMPROJ             Projector spec (overridden by --mmproj)

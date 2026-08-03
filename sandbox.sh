@@ -28,23 +28,26 @@ SCRIPT_DIR="$(CDPATH='' cd -P -- "$(dirname -- "$0")" && pwd)"
 # ($0 itself must stay the real path — SCRIPT_DIR above depends on it.)
 PROG="${SANDBOXED_AI_PROG:-${0##*/}}"
 
-# Seatbelt profiles (*.sb) sit next to this script — in the repo when run as
-# ./sandbox.sh, in the Nix store when run as the bundled `sandboxed-ai`. State,
-# however, must be writable, so it is rooted at the directory you run from
-# (the store copy is read-only). Override the latter with SANDBOXED_AI_HOME.
-PROJECT_DIR="${SANDBOXED_AI_HOME:-$PWD}"
-
 # ── Defaults ──────────────────────────────────────────────
 # PORT is fixed: the servers bind it and the clients dial it, so there is
-# nothing to communicate between runs. STATE_DIR is the shared writable
-# root for every subcommand. TMPDIR stays unexported here; each subcommand
-# exports it for its sandboxed process.
+# nothing to communicate between runs.
+#
+# Everything this script owns — models, caches, scratch, each tool's home —
+# lives under STATE_DIR, per user and deliberately outside any workspace: a
+# client sandbox gets write access to its workspace, and must not be able to
+# reach what another sandbox trusts (server caches, model weights). The only
+# path taken from the caller is the workspace itself (pi's -w, default $PWD).
+# ($HOME here is the real one; subcommands re-root HOME only later. TMPDIR
+# stays unexported; each subcommand exports it for its sandboxed process.)
 PORT=8080
-STATE_DIR="$PROJECT_DIR/.sandboxed-ai"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/sandboxed-ai"
 CACHE_DIR="$STATE_DIR/cache"
 TMPDIR="$STATE_DIR/tmp"
-MODELS_DIR="$PROJECT_DIR/models"
-readonly SCRIPT_DIR PROG PROJECT_DIR PORT STATE_DIR CACHE_DIR MODELS_DIR
+# Weights are large and often belong on another volume; SANDBOXED_AI_MODELS
+# relocates them. Give it a real path, not a symlink: seatbelt matches
+# resolved paths, so a link would not match the granted MODEL_DIR.
+MODELS_DIR="${SANDBOXED_AI_MODELS:-$STATE_DIR/models}"
+readonly SCRIPT_DIR PROG PORT STATE_DIR CACHE_DIR MODELS_DIR
 
 # ── Output & usage ────────────────────────────────────────
 die() {
@@ -100,7 +103,11 @@ llm options:
   default model is preset to "llama-server").
 
 Environment:
-  SANDBOXED_AI_HOME  Root for writable state and models (default: current dir)
+  XDG_STATE_HOME     Parent of the per-user dir holding models, caches and
+                     each tool's home (default: ~/.local/state)
+  SANDBOXED_AI_MODELS
+                     Model directory, for weights on another volume
+                     (default: \$XDG_STATE_HOME/sandboxed-ai/models)
   SANDBOXED_AI_PROG  Program name shown in this help (set by the Nix wrapper)
   MODEL              Model spec (overridden by --model)
   MMPROJ             Projector spec (overridden by --mmproj)
@@ -547,7 +554,7 @@ need_arg() { [[ $# -ge 2 ]] || die "$1 requires an argument"; }
 # Consume leading -w/--workspace DIR (last wins); sets WORKSPACE and ARGS
 # (the remaining args, passed through to the wrapped tool).
 parse_workspace() {
-  WORKSPACE="$PROJECT_DIR"
+  WORKSPACE="$PWD"
   while [[ "${1:-}" == "-w" || "${1:-}" == "--workspace" ]]; do
     need_arg "$@"
     WORKSPACE="$2"
@@ -652,6 +659,11 @@ cmd_mlx() {
   # The model is fully local and the sandbox denies outbound network anyway;
   # keep huggingface_hub from even trying.
   export HF_HUB_OFFLINE=1
+  # Python auto-imports usercustomize from the user site directory under
+  # $HOME. HOME is ours (above) and outside every client's grants, but the
+  # server holds GPU and model access, so refuse user-site imports outright
+  # rather than rely on the directory staying unwritable.
+  export PYTHONNOUSERSITE=1
 
   # Serve by repo id when the spec is an HF repo: the seeded cache entry
   # lets both servers resolve that id offline and list it on /v1/models, so
@@ -773,6 +785,7 @@ cmd_pi() {
     -D WORKSPACE="$WORKSPACE" \
     -D PI_DIR="$pi_home" \
     -D PI_LLAMA_DIR="$PI_LLAMA_DIR" \
+    -D TMPDIR="$TMPDIR" \
     -D NET_ADDR="localhost:$PORT" \
     -f "$SCRIPT_DIR/pi.sb" \
     "$pi_bin" -e "$plugin" "${ARGS[@]}"

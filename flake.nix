@@ -135,7 +135,7 @@
       # sandbox.sh together with the seatbelt profiles (*.sb) and the runtime it
       # shells out to, so it needs nothing from the working tree. Profiles are
       # read from next to the script in the store; writable state (models,
-      # cache, generated config) lives under the directory you run it from.
+      # caches, per-tool homes) lives under $XDG_STATE_HOME/sandboxed-ai.
       # Named `sandboxed-ai`, not `sandbox`, to avoid colliding with shells that
       # already define a `sandbox` abbreviation/function.
       sandboxed-ai = pkgs.stdenv.mkDerivation {

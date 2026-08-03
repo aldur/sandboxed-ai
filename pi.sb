@@ -22,9 +22,11 @@
   (literal "/private/etc/hosts")
   (literal "/Library/Preferences/com.apple.networkd.plist"))
 
-;; ── pi state (~/.pi etc.; HOME points here) ──────────────
+;; ── pi state (~/.pi etc.; HOME points here) + scratch ────
+;; Both live under the per-user state root, outside the workspace.
 (allow file-read* file-write*
-  (subpath (param "PI_DIR")))
+  (subpath (param "PI_DIR"))
+  (subpath (param "TMPDIR")))
 
 ;; ── llama-cpp provider extension (read-only, from store) ─
 ;; Covered by common.sb's PKG_STORE rule, but the explicit path makes the
