@@ -62,6 +62,10 @@
 (allow file-read*
   (literal "/System/Library/CoreServices/SystemVersion.plist"))
 
+;; TLS trust store — the CA bundle certifi opens
+(allow file-read*
+  (literal (param "CA_FILE")))
+
 ;; Model weights (read-only)
 (allow file-read*
   (subpath (param "MODEL_DIR")))

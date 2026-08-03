@@ -648,6 +648,11 @@ cmd_mlx() {
   info "extra:" "${extra_args[*]:-none}"
   printf '\n'
 
+  local ca_file="/dev/null"
+  if [[ -n "${NIX_SSL_CERT_FILE:-}" && "$NIX_SSL_CERT_FILE" != "/no-cert-file.crt" ]]; then
+    ca_file="$(realpath "$NIX_SSL_CERT_FILE" 2>/dev/null || echo /dev/null)"
+  fi
+
   # cd to an allowed dir so the server's getcwd() succeeds inside the sandbox
   cd "$CACHE_DIR"
 
@@ -657,6 +662,7 @@ cmd_mlx() {
   exec sandbox-exec \
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
     -D PKG_STORE="$(pkg_store_for "$mlx_server")" \
+    -D CA_FILE="$ca_file" \
     -D MODEL_DIR="$model_dir" \
     -D CACHE_DIR="$CACHE_DIR" \
     -D TMPDIR="$TMPDIR" \
