@@ -26,11 +26,6 @@ jobs:
           - package: llama-cpp
             nix-update-args: --version=stable --version-regex 'b(.*)'
             verify: nix build .#llama-cpp -L
-          # pi-llama is pinned to a commit on the default branch; the pi
-          # wrapper hardcodes <pi-llama>/index.ts, so check it still exists.
-          - package: pi-llama
-            nix-update-args: --version=branch
-            verify: nix build .#pi -L && test -f "$(nix build .#pi-llama -L --print-out-paths)/index.ts"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -86,7 +81,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [llama-cpp, pi-llama]
+        package: [llama-cpp]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:

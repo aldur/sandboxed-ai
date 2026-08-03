@@ -34,6 +34,7 @@ Usage: $PROG <command> [options]
 
 Commands:
   llama-server  Start the llama-server (sandboxed)
+  mlx-server    Start mlx_lm.server (sandboxed)
   opencode  Start opencode (sandboxed)
   pi            Start pi (pi-coding-agent) with the llama-cpp plugin (sandboxed)
   llm           Run llm CLI (sandboxed)
@@ -43,6 +44,11 @@ llama-server options:
                         HF quant (org/repo:Q4_K_M). Omit the part after ':'
                         to list available GGUF files.
   All other flags are passed through to llama-server.
+
+mlx-server options:
+  --model SPEC          Local model directory or HF repo of an MLX model
+                        (e.g. mlx-community/Qwen3-8B-4bit).
+  All other flags are passed through to mlx_lm.server.
 
 opencode options:
   -w, --workspace DIR   Workspace directory (default: script dir)
@@ -59,6 +65,7 @@ llm options:
 Environment:
   MODEL             Model spec (overridden by --model)
   LLAMA_SERVER      Explicit path to llama-server binary (fallback: PATH)
+  MLX_SERVER        Explicit path to mlx_lm.server binary (fallback: PATH)
   PI                Explicit path to pi binary (fallback: PATH)
   PI_LLAMA_DIR      Dir holding the pi llama-cpp plugin's index.ts
                     (set by the Nix wrapper; required for the pi command)
@@ -185,6 +192,71 @@ hf_download() {
   }
 }
 
+# Download one file from an HF repo into target (resumable). Reuses an
+# existing non-empty copy. Unlike hf_download there is no content validation —
+# MLX repos hold many file types (safetensors, json, tokenizer data).
+# NOTE: Not smart enough to detect truncated downloads.
+hf_download_raw() {
+  local repo="$1" file="$2" target="$3"
+
+  if [[ -s "$target" ]]; then
+    info "cached:" "$file" >&2
+    return
+  fi
+
+  info "download:" "$file" >&2
+  mkdir -p "$(dirname "$target")"
+  curl -sfL -C - --progress-bar -o "$target" \
+    "https://huggingface.co/$repo/resolve/main/$file" ||
+    die "failed to download $repo/$file"
+}
+
+# Resolve an MLX model spec to a local model directory, downloading from HF as
+# needed. Accepts:
+#   /path/to/model-dir     → local directory, used directly
+#   org/repo               → full repo download (an MLX model is a directory:
+#                            config.json, tokenizer files, *.safetensors)
+resolve_mlx_model() {
+  local spec="$1"
+
+  # Local directory
+  if [[ -d "$spec" ]]; then
+    [[ -f "$spec/config.json" ]] ||
+      die "not an MLX model directory (no config.json): $spec"
+    printf '%s' "$(cd "$spec" && pwd)"
+    return
+  fi
+
+  # Must look like an HF ref: org/repo, not an absolute path.
+  [[ "$spec" == */* && "$spec" != /* ]] ||
+    die "model not found: $spec (use a local directory or org/repo)"
+
+  # All files in the repo (rfilenames, may include subfolders).
+  local listing
+  listing="$(curl -sf "https://huggingface.co/api/models/$spec" |
+    grep -o '"rfilename":"[^"]*"' |
+    sed 's/"rfilename":"//;s/"//')" || listing=""
+  [[ -n "$listing" ]] || die "no files found on HF for $spec"
+
+  info "resolving:" "$spec" >&2
+
+  local target_dir="$MODELS_DIR/$spec"
+  local f
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    # Skip repo metadata (dotfiles like .gitattributes, README, ...).
+    case "$f" in
+    .* | */.* | README.md | *.md) continue ;;
+    esac
+    hf_download_raw "$spec" "$f" "$target_dir/$f"
+  done <<<"$listing"
+
+  [[ -f "$target_dir/config.json" ]] ||
+    die "not an MLX model repo (no config.json): $spec"
+
+  printf '%s' "$target_dir"
+}
+
 # Resolve a model spec to a local GGUF file path, downloading from HF as needed.
 # Accepts:
 #   /path/to/model.gguf    → local file, used directly
@@ -286,13 +358,17 @@ pkg_store_for() {
   esac
 }
 
-# Write llama-server state so cmd_opencode can generate a matching config.
+# Write server state so cmd_opencode can generate a matching config.
+# $2 is the model id clients must send on the wire; it defaults to the alias
+# (llama-server serves under --alias) but differs for mlx_lm.server, which
+# only maps the literal "default_model" to its --model.
 write_llama_state() {
-  local alias="$1"
+  local alias="$1" model_id="${2:-$1}"
   mkdir -p "$STATE_DIR"
   cat >"$STATE_DIR/llama-state" <<EOF
 LLAMA_ALIAS=$alias
 LLAMA_PORT=$PORT
+LLAMA_MODEL_ID=$model_id
 EOF
 }
 
@@ -303,14 +379,16 @@ generate_opencode_config() {
 
   [[ -f "$state_file" ]] || die "no llama-server state found — start llama first"
 
-  local LLAMA_ALIAS LLAMA_PORT
+  local LLAMA_ALIAS LLAMA_PORT LLAMA_MODEL_ID
   # shellcheck source=/dev/null
   source "$state_file"
+  # State written before the model-id field existed defaults to the alias.
+  LLAMA_MODEL_ID="${LLAMA_MODEL_ID:-$LLAMA_ALIAS}"
 
   cat >"$target_dir/opencode.json" <<EOF
 {
   "\$schema": "https://opencode.ai/config.json",
-  "model": "llama/$LLAMA_ALIAS",
+  "model": "llama/$LLAMA_MODEL_ID",
   "provider": {
     "llama": {
       "npm": "@ai-sdk/openai-compatible",
@@ -320,7 +398,7 @@ generate_opencode_config() {
         "apiKey": "dummy"
       },
       "models": {
-        "$LLAMA_ALIAS": {
+        "$LLAMA_MODEL_ID": {
           "name": "$LLAMA_ALIAS",
           "tool_call": true
         }
@@ -390,6 +468,72 @@ cmd_llama() {
     "$llama_server" \
     --model "$model_path" \
     --alias "$alias" \
+    --port "$PORT" \
+    "${extra_args[@]}"
+}
+
+cmd_mlx() {
+  # Extract --model, pass everything else through to mlx_lm.server
+  local extra_args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --model)
+      MODEL="$2"
+      shift 2
+      ;;
+    *)
+      extra_args+=("$1")
+      shift
+      ;;
+    esac
+  done
+
+  [[ -n "${MODEL:-}" ]] || die "no model specified — use --model or set MODEL env var"
+
+  local model_dir
+  model_dir="$(resolve_mlx_model "$MODEL")"
+
+  local mlx_server
+  mlx_server="$(resolve_binary "${MLX_SERVER:-}" "mlx_lm.server")"
+
+  local alias
+  alias="$(basename "$model_dir")"
+
+  mkdir -p "$CACHE_DIR" "$TMPDIR"
+  export TMPDIR
+  # Root ~-relative state (HF hub cache scans etc.) inside the writable cache.
+  export HOME="$CACHE_DIR/mlx-home"
+  export HF_HOME="$HOME/huggingface"
+  mkdir -p "$HF_HOME"
+  # The model is fully local and the sandbox denies outbound network anyway;
+  # keep huggingface_hub from even trying.
+  export HF_HUB_OFFLINE=1
+
+  # mlx_lm.server only maps the request model "default_model" to its --model;
+  # any other value is treated as a path/repo to load (impossible offline).
+  write_llama_state "$alias" "default_model"
+
+  printf 'Starting sandboxed mlx_lm.server:\n'
+  info "binary:" "$mlx_server"
+  info "model:" "$model_dir"
+  info "alias:" "$alias"
+  info "port:" "$PORT"
+  info "extra:" "${extra_args[*]:-none}"
+  printf '\n'
+
+  # cd to an allowed dir so the server's getcwd() succeeds inside the sandbox
+  cd "$CACHE_DIR"
+
+  exec sandbox-exec \
+    -D COMMON_SB="$SCRIPT_DIR/common.sb" \
+    -D PKG_STORE="$(pkg_store_for "$mlx_server")" \
+    -D MODEL_DIR="$model_dir" \
+    -D CACHE_DIR="$CACHE_DIR" \
+    -D TMPDIR="$TMPDIR" \
+    -D NET_ADDR="*:$PORT" \
+    -f "$SCRIPT_DIR/mlx-server.sb" \
+    "$mlx_server" \
+    --model "$model_dir" \
     --port "$PORT" \
     "${extra_args[@]}"
 }
@@ -541,6 +685,7 @@ cmd="$1"
 shift
 case "$cmd" in
 llama-server) cmd_llama "$@" ;;
+mlx-server) cmd_mlx "$@" ;;
 opencode) cmd_opencode "$@" ;;
 pi) cmd_pi "$@" ;;
 llm) cmd_llm "$@" ;;

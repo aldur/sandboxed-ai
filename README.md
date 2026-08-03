@@ -3,6 +3,7 @@
 This repository provides `sandbox-exec` profiles to run:
 
 1. [`llama-server`][1]
+1. [`mlx_lm.server`][5]
 1. [`pi`][4]
 1. [`opencode`][2]
 1. [`simonw/llm`][3]
@@ -36,6 +37,17 @@ The sandbox is default-deny and only allows access to the GPU and the models.
 Network access is disabled for `llama-server`. Models are downloaded through
 `curl` (outside of the sandbox).
 
+The same works for [MLX][5] models through `mlx_lm.server`, which exposes the
+same OpenAI-compatible API on the same port:
+
+```bash
+# Install mlx_lm or use `nix develop`
+brew install mlx-lm
+
+# Sandbox it and run it
+./sandbox.sh mlx-server --model mlx-community/Qwen3-8B-4bit
+```
+
 ```bash
 # Install opencode or use `nix develop`
 brew install opencode pi-coding-agent
@@ -62,6 +74,7 @@ Usage: sandbox.sh <command> [options]
 
 Commands:
   llama-server  Start the llama-server (sandboxed)
+  mlx-server    Start mlx_lm.server (sandboxed)
   opencode  Start opencode (sandboxed)
   pi            Start pi (pi-coding-agent) with the llama-cpp plugin (sandboxed)
   llm           Run llm CLI (sandboxed)
@@ -71,6 +84,11 @@ llama-server options:
                         HF quant (org/repo:Q4_K_M). Omit the part after ':'
                         to list available GGUF files.
   All other flags are passed through to llama-server.
+
+mlx-server options:
+  --model SPEC          Local model directory or HF repo of an MLX model
+                        (e.g. mlx-community/Qwen3-8B-4bit).
+  All other flags are passed through to mlx_lm.server.
 
 opencode options:
   -w, --workspace DIR   Workspace directory (default: script dir)
@@ -87,6 +105,7 @@ llm options:
 Environment:
   MODEL             Model spec (overridden by --model)
   LLAMA_SERVER      Explicit path to llama-server binary (fallback: PATH)
+  MLX_SERVER        Explicit path to mlx_lm.server binary (fallback: PATH)
   PI                Explicit path to pi binary (fallback: PATH)
   PI_LLAMA_DIR      Dir holding the pi llama-cpp plugin's index.ts
                     (set by the Nix wrapper; required for the pi command)
@@ -97,3 +116,4 @@ Environment:
 [2]: https://opencode.ai/
 [3]: https://github.com/simonw/llm
 [4]: https://pi.dev/
+[5]: https://github.com/ml-explore/mlx-lm
