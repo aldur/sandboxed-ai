@@ -176,7 +176,6 @@
                 llm
                 mlx-lm
                 mlx-vlm
-                pkgs.opencode
                 pkgs.pi-coding-agent
               ]
             }
@@ -206,7 +205,6 @@
           llm
           mlx-lm
           mlx-vlm
-          pkgs.opencode
           pkgs.pi-coding-agent
           sandboxed-ai
         ];

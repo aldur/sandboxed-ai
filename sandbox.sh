@@ -9,8 +9,7 @@
 # Subcommand → seatbelt profile (all import common.sb; the servers also
 # import net-tcp.sb or net-unix.sb, chosen by --socket):
 #   llama-server → llama-server.sb    mlx-server → mlx-server.sb
-#   opencode     → opencode.sb        pi         → pi.sb
-#   llm          → llm.sb
+#   pi           → pi.sb              llm        → llm.sb
 #
 # sandbox-exec -D values are literal strings consumed by (param ...) in the
 # profiles — they parameterize path/address filters, never profile code.
@@ -39,9 +38,8 @@ PROJECT_DIR="${SANDBOXED_AI_HOME:-$PWD}"
 # ── Defaults ──────────────────────────────────────────────
 # PORT is fixed (no flag reads it back); the SERVER_PORT state round-trip
 # exists for future variability. STATE_DIR is the shared writable root for
-# every subcommand, handed to opencode wholesale as -D STATE_DIR. TMPDIR
-# stays unexported here; each subcommand exports it for its sandboxed
-# process.
+# every subcommand. TMPDIR stays unexported here; each subcommand exports
+# it for its sandboxed process.
 PORT=8080
 STATE_DIR="$PROJECT_DIR/.sandboxed-ai"
 CACHE_DIR="$STATE_DIR/cache"
@@ -72,7 +70,6 @@ Usage: $PROG <command> [options]
 Commands:
   llama-server  Start the llama-server (sandboxed)
   mlx-server    Start mlx_lm.server (sandboxed)
-  opencode      Start opencode (sandboxed)
   pi            Start pi (pi-coding-agent) with the llama-cpp plugin (sandboxed)
   llm           Run llm CLI (sandboxed)
 
@@ -95,10 +92,6 @@ mlx-server options:
                         .sock) instead of TCP.
   All other flags are passed through to the server.
 
-opencode options:
-  -w, --workspace DIR   Workspace directory (default: current directory)
-  Additional args are passed through to opencode.
-
 pi options:
   -w, --workspace DIR   Workspace directory (default: current directory)
   Additional args are passed through to pi.
@@ -112,7 +105,7 @@ Environment:
   SANDBOXED_AI_PROG  Program name shown in this help (set by the Nix wrapper)
   MODEL              Model spec (overridden by --model)
   MMPROJ             Projector spec (overridden by --mmproj)
-  LLAMA_SERVER, MLX_SERVER, MLX_VLM_SERVER, OPENCODE, PI, LLM
+  LLAMA_SERVER, MLX_SERVER, MLX_VLM_SERVER, PI, LLM
                      Explicit binary paths (fallback: PATH lookup)
   PI_LLAMA_DIR       Dir holding the pi llama-cpp plugin's index.ts
                      (set by the Nix wrapper; required for the pi command)
@@ -574,37 +567,6 @@ load_server_state() {
   SERVER_BACKEND="${SERVER_BACKEND:-llama}"
 }
 
-# Generate opencode.json in the given directory from the recorded state.
-generate_opencode_config() {
-  local target_dir="$1"
-
-  load_server_state || die "no server state found — start llama-server or mlx-server first"
-
-  cat >"$target_dir/opencode.json" <<EOF
-{
-  "\$schema": "https://opencode.ai/config.json",
-  "model": "llama/$SERVER_MODEL_ID",
-  "provider": {
-    "llama": {
-      "npm": "@ai-sdk/openai-compatible",
-      "name": "llama.cpp (local)",
-      "options": {
-        "baseURL": "http://127.0.0.1:$SERVER_PORT/v1",
-        "apiKey": "dummy"
-      },
-      "models": {
-        "$SERVER_MODEL_ID": {
-          "name": "$SERVER_ALIAS",
-          "tool_call": true
-        }
-      }
-    }
-  },
-  "autoupdate": false
-}
-EOF
-}
-
 # ── Subcommands ───────────────────────────────────────────
 # Each cmd_* cds into a sandbox-readable directory (the sandboxed process's
 # getcwd() must resolve) and ends in `exec sandbox-exec` with every grant
@@ -791,39 +753,6 @@ cmd_mlx() {
     "$mlx_server" "${server_args[@]}" "${extra_args[@]}"
 }
 
-cmd_opencode() {
-  parse_workspace "$@"
-
-  mkdir -p "$CACHE_DIR" "$TMPDIR"
-  export TMPDIR
-  export XDG_CONFIG_HOME="$STATE_DIR/config"
-  export XDG_STATE_HOME="$STATE_DIR/state"
-  export XDG_DATA_HOME="$STATE_DIR/data"
-  export XDG_CACHE_HOME="$CACHE_DIR"
-  export OPENCODE_DISABLE_MODELS_FETCH=1
-  export OPENCODE_DISABLE_EXTERNAL_SKILLS=1
-  export OPENCODE_DISABLE_TERMINAL_TITLE=1
-
-  generate_opencode_config "$WORKSPACE"
-
-  local opencode_bin pkg_store
-  opencode_bin="$(resolve_binary "${OPENCODE:-}" opencode OPENCODE)"
-  pkg_store="$(pkg_store_for "$opencode_bin")"
-
-  # Node-based TUIs open many fds; raise the limit to the macOS maximum.
-  ulimit -n 2147483646
-
-  cd "$WORKSPACE"
-
-  exec sandbox-exec \
-    -D COMMON_SB="$SCRIPT_DIR/common.sb" \
-    -D PKG_STORE="$pkg_store" \
-    -D WORKSPACE="$WORKSPACE" \
-    -D STATE_DIR="$STATE_DIR" \
-    -f "$SCRIPT_DIR/opencode.sb" \
-    "$opencode_bin" "${ARGS[@]}"
-}
-
 cmd_pi() {
   parse_workspace "$@"
 
@@ -921,7 +850,6 @@ shift
 case "$cmd" in
 llama-server) cmd_llama "$@" ;;
 mlx-server) cmd_mlx "$@" ;;
-opencode) cmd_opencode "$@" ;;
 pi) cmd_pi "$@" ;;
 llm) cmd_llm "$@" ;;
 -h | --help | help) usage ;;
