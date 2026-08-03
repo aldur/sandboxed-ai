@@ -22,9 +22,11 @@
   (literal "/private/etc/hosts")
   (literal "/Library/Preferences/com.apple.networkd.plist"))
 
-;; ── OpenCode state (XDG dirs) ────────────────────────────
+;; ── State root (XDG dirs) ────────────────────────────────
+;; The shared .sandboxed-ai state tree: opencode's XDG dirs live here, but
+;; the grant deliberately covers the whole root (cache, server state).
 (allow file-read* file-write*
-  (subpath (param "OPENCODE_DIR")))
+  (subpath (param "STATE_DIR")))
 
 ;; ── xcode-select (git toolchain detection) ───────────────
 (allow file-read* file-read-metadata

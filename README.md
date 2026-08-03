@@ -83,7 +83,7 @@ Usage: sandbox.sh <command> [options]
 Commands:
   llama-server  Start the llama-server (sandboxed)
   mlx-server    Start mlx_lm.server (sandboxed)
-  opencode  Start opencode (sandboxed)
+  opencode      Start opencode (sandboxed)
   pi            Start pi (pi-coding-agent) with the llama-cpp plugin (sandboxed)
   llm           Run llm CLI (sandboxed)
 
@@ -107,26 +107,29 @@ mlx-server options:
   All other flags are passed through to the server.
 
 opencode options:
-  -w, --workspace DIR   Workspace directory (default: script dir)
+  -w, --workspace DIR   Workspace directory (default: current directory)
   Additional args are passed through to opencode.
 
 pi options:
-  -w, --workspace DIR   Workspace directory (default: project dir)
+  -w, --workspace DIR   Workspace directory (default: current directory)
   Additional args are passed through to pi.
 
 llm options:
-  -m, --model MODEL     Model name (default: llama-server)
-  Additional args are passed through to llm.
+  All args are passed through to llm (use its -m to pick a model; the
+  default model is preset to "llama-server").
 
 Environment:
-  MODEL             Model spec (overridden by --model)
-  MMPROJ            Projector spec (overridden by --mmproj)
-  LLAMA_SERVER      Explicit path to llama-server binary (fallback: PATH)
-  MLX_SERVER        Explicit path to mlx_lm.server binary (fallback: PATH)
-  MLX_VLM_SERVER    Explicit path to mlx_vlm.server binary (fallback: PATH)
-  PI                Explicit path to pi binary (fallback: PATH)
-  PI_LLAMA_DIR      Dir holding the pi llama-cpp plugin's index.ts
-                    (set by the Nix wrapper; required for the pi command)
+  SANDBOXED_AI_HOME  Root for writable state and models (default: current dir)
+  SANDBOXED_AI_PROG  Program name shown in this help (set by the Nix wrapper)
+  MODEL              Model spec (overridden by --model)
+  MMPROJ             Projector spec (overridden by --mmproj)
+  LLAMA_SERVER, MLX_SERVER, MLX_VLM_SERVER, OPENCODE, PI, LLM
+                     Explicit binary paths (fallback: PATH lookup)
+  PI_LLAMA_DIR       Dir holding the pi llama-cpp plugin's index.ts
+                     (set by the Nix wrapper; required for the pi command)
+  NIX_SSL_CERT_FILE  CA bundle granted read-only to the mlx sandbox
+  LLAMA_API_KEY, OPENAI_API_KEY
+                     Client API keys; local servers accept the "dummy" default
 ```
 
 [0]: https://aldur.blog/articles/2026/03/12/sandboxing-local-models-on-macos

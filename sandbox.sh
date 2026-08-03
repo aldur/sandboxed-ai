@@ -1,12 +1,34 @@
 #!/usr/bin/env bash
+# Sandbox local AI tools with macOS seatbelt (sandbox-exec).
+#
+# Layout: constants → sandbox helpers → Hugging Face downloads → model
+# resolution (GGUF, MLX) → server state & client config → one cmd_* per
+# subcommand, each ending in `exec sandbox-exec` with every grant spelled
+# out → dispatch.
+#
+# Subcommand → seatbelt profile (all import common.sb; the servers also
+# import net-tcp.sb or net-unix.sb, chosen by --socket):
+#   llama-server → llama-server.sb    mlx-server → mlx-server.sb
+#   opencode     → opencode.sb        pi         → pi.sb
+#   llm          → llm.sb
+#
+# sandbox-exec -D values are literal strings consumed by (param ...) in the
+# profiles — they parameterize path/address filters, never profile code.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# ${var,,}, associative arrays, namerefs, and empty arrays under `set -u`
+# need a modern bash (nix and homebrew both ship 5.x).
+((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4))) ||
+  { printf 'error: bash >= 4.4 required (found %s)\n' "$BASH_VERSION" >&2; exit 1; }
+# For the delimited quant-label match in select_gguf_files.
+shopt -s extglob
+
+SCRIPT_DIR="$(CDPATH='' cd -P -- "$(dirname -- "$0")" && pwd)"
 
 # Program name shown in usage/messages. The Nix wrapper sets SANDBOXED_AI_PROG
 # so it reads `sandboxed-ai`; run directly it falls back to the script basename.
 # ($0 itself must stay the real path — SCRIPT_DIR above depends on it.)
-PROG="${SANDBOXED_AI_PROG:-$(basename "$0")}"
+PROG="${SANDBOXED_AI_PROG:-${0##*/}}"
 
 # Seatbelt profiles (*.sb) sit next to this script — in the repo when run as
 # ./sandbox.sh, in the Nix store when run as the bundled `sandboxed-ai`. State,
@@ -15,18 +37,33 @@ PROG="${SANDBOXED_AI_PROG:-$(basename "$0")}"
 PROJECT_DIR="${SANDBOXED_AI_HOME:-$PWD}"
 
 # ── Defaults ──────────────────────────────────────────────
+# PORT is fixed (no flag reads it back); the SERVER_PORT state round-trip
+# exists for future variability. STATE_DIR is the shared writable root for
+# every subcommand, handed to opencode wholesale as -D STATE_DIR. TMPDIR
+# stays unexported here; each subcommand exports it for its sandboxed
+# process.
 PORT=8080
-STATE_DIR="$PROJECT_DIR/.opencode"
+STATE_DIR="$PROJECT_DIR/.sandboxed-ai"
 CACHE_DIR="$STATE_DIR/cache"
 TMPDIR="$STATE_DIR/tmp"
 MODELS_DIR="$PROJECT_DIR/models"
+readonly SCRIPT_DIR PROG PROJECT_DIR PORT STATE_DIR CACHE_DIR MODELS_DIR
 
-# ── Helpers ───────────────────────────────────────────────
+# ── Output & usage ────────────────────────────────────────
 die() {
   printf 'error: %s\n' "$*" >&2
   exit 1
 }
+# Prints to stdout; callers whose stdout is captured redirect to stderr.
 info() { printf '  %-14s %s\n' "$1" "$2"; }
+
+# Read the non-empty lines of $1 into the array named by $2.
+split_lines() {
+  local -n _lines="$2"
+  _lines=()
+  local line
+  while IFS= read -r line; do [[ -n "$line" ]] && _lines+=("$line"); done <<<"$1"
+}
 
 usage() {
   cat >&2 <<EOF
@@ -35,7 +72,7 @@ Usage: $PROG <command> [options]
 Commands:
   llama-server  Start the llama-server (sandboxed)
   mlx-server    Start mlx_lm.server (sandboxed)
-  opencode  Start opencode (sandboxed)
+  opencode      Start opencode (sandboxed)
   pi            Start pi (pi-coding-agent) with the llama-cpp plugin (sandboxed)
   llm           Run llm CLI (sandboxed)
 
@@ -59,38 +96,187 @@ mlx-server options:
   All other flags are passed through to the server.
 
 opencode options:
-  -w, --workspace DIR   Workspace directory (default: script dir)
+  -w, --workspace DIR   Workspace directory (default: current directory)
   Additional args are passed through to opencode.
 
 pi options:
-  -w, --workspace DIR   Workspace directory (default: project dir)
+  -w, --workspace DIR   Workspace directory (default: current directory)
   Additional args are passed through to pi.
 
 llm options:
-  -m, --model MODEL     Model name (default: llama-server)
-  Additional args are passed through to llm.
+  All args are passed through to llm (use its -m to pick a model; the
+  default model is preset to "llama-server").
 
 Environment:
-  MODEL             Model spec (overridden by --model)
-  MMPROJ            Projector spec (overridden by --mmproj)
-  LLAMA_SERVER      Explicit path to llama-server binary (fallback: PATH)
-  MLX_SERVER        Explicit path to mlx_lm.server binary (fallback: PATH)
-  MLX_VLM_SERVER    Explicit path to mlx_vlm.server binary (fallback: PATH)
-  PI                Explicit path to pi binary (fallback: PATH)
-  PI_LLAMA_DIR      Dir holding the pi llama-cpp plugin's index.ts
-                    (set by the Nix wrapper; required for the pi command)
+  SANDBOXED_AI_HOME  Root for writable state and models (default: current dir)
+  SANDBOXED_AI_PROG  Program name shown in this help (set by the Nix wrapper)
+  MODEL              Model spec (overridden by --model)
+  MMPROJ             Projector spec (overridden by --mmproj)
+  LLAMA_SERVER, MLX_SERVER, MLX_VLM_SERVER, OPENCODE, PI, LLM
+                     Explicit binary paths (fallback: PATH lookup)
+  PI_LLAMA_DIR       Dir holding the pi llama-cpp plugin's index.ts
+                     (set by the Nix wrapper; required for the pi command)
+  NIX_SSL_CERT_FILE  CA bundle granted read-only to the mlx sandbox
+  LLAMA_API_KEY, OPENAI_API_KEY
+                     Client API keys; local servers accept the "dummy" default
 EOF
   exit 1
 }
 
-# Strip a GGUF split suffix (-00001-of-00003.gguf) or a plain .gguf extension,
-# yielding a key shared by every shard of one quant.
+# ── Sandbox helpers: exec targets & grants ────────────────
+# Everything here produces a value handed to sandbox-exec as a -D parameter
+# (or the binary that is exec'd), i.e. the security-relevant inputs.
+
+# Absolute, physical (symlink-free) path of existing file $1.
+abspath() {
+  local dir
+  dir="$(CDPATH='' cd -P -- "$(dirname -- "$1")" && pwd)" ||
+    die "cannot resolve path: $1"
+  printf '%s/%s' "$dir" "${1##*/}"
+}
+
+# Locate the executable for a command. $1 is an explicit override (from the
+# env var named $3) and wins over the PATH lookup of $2. Prints an absolute
+# path.
+resolve_binary() {
+  local override="$1" name="$2" var="$3"
+
+  if [[ -n "$override" ]]; then
+    [[ -x "$override" ]] || die "$name not executable: $override (from \$$var)"
+    abspath "$override"
+    return
+  fi
+  command -v "$name" ||
+    die "$name not found on PATH. Install it or set $var."
+}
+
+# Package store prefix of a binary: the subtree the profiles grant read +
+# execute on (PKG_STORE). Fails closed on an unrecognized location.
+pkg_store_for() {
+  case "$1" in
+  /nix/*) printf '/nix' ;;
+  /opt/homebrew/*) printf '/opt/homebrew' ;;
+  *) die "cannot determine package store for: $1" ;;
+  esac
+}
+
+# The CA bundle the mlx profile grants read on: huggingface_hub builds an
+# SSL context even in offline mode, and nixpkgs' certifi opens
+# NIX_SSL_CERT_FILE verbatim (/no-cert-file.crt is its "unset" marker). On
+# nix-darwin that path is a symlink chain the sandbox won't traverse, so
+# resolve it and hand the real file to both the profile and (re-exported)
+# certifi. Sets CA_FILE; /dev/null means "no bundle" — the profile
+# references the param unconditionally and sandbox-exec errors on a
+# never-passed one.
+resolve_ca_file() {
+  CA_FILE="/dev/null"
+  local ca="${NIX_SSL_CERT_FILE:-/no-cert-file.crt}"
+  [[ "$ca" != "/no-cert-file.crt" ]] || return 0
+  ca="$(realpath "$ca" 2>/dev/null)" || return 0
+  export NIX_SSL_CERT_FILE="$ca"
+  CA_FILE="$ca"
+}
+
+# Network personality for the server sandboxes, as two mutable globals the
+# exec blocks pass through: NET_SB is the profile snippet imported via
+# (import (param "NET_SB")), NET_TARGET the one filter value it consumes.
+# Default is TCP on $PORT (net-tcp.sb); a --socket path selects net-unix.sb
+# with the socket path as the filter — each personality grants nothing of
+# the other's surface. The path must end in .sock (all three servers key
+# UNIX-socket mode off that suffix on --host) and is normalized here.
+select_net() {
+  NET_SB="$SCRIPT_DIR/net-tcp.sb"
+  NET_TARGET="*:$PORT"
+
+  local sock="${1:-}"
+  [[ -n "$sock" ]] || return 0
+  [[ "$sock" == *.sock ]] || die "--socket path must end in .sock: $sock"
+  [[ "$sock" == /* ]] || sock="$PWD/$sock"
+  mkdir -p "${sock%/*}" # the profile grants only the socket path itself
+  rm -f "$sock"         # a stale socket file would make bind() fail
+  NET_SB="$SCRIPT_DIR/net-unix.sb"
+  NET_TARGET="$sock"
+}
+
+# ── Hugging Face downloads ────────────────────────────────
+# Lifecycle: partial downloads are kept on purpose (curl -C - resumes them);
+# neither helper detects a truncated file that stopped growing. Network
+# failure and "no such repo" both yield an empty listing — callers treat the
+# two alike and fall back to local files.
+
+# rfilenames of an HF repo, one per line; $2 optionally narrows to a
+# (grep-escaped) filename-suffix pattern. Empty output when offline or the
+# repo is unknown.
+hf_listing() {
+  curl -sf "https://huggingface.co/api/models/$1" |
+    grep -o "\"rfilename\":\"[^\"]*${2:-}\"" |
+    sed 's/"rfilename":"//;s/"//'
+}
+
+# Download one GGUF file from HF into target (resumable), verifying its
+# magic bytes. Reuses a valid cached copy. All output goes to stderr.
+hf_download() {
+  local repo="$1" file="$2" target="$3"
+  local magic
+
+  if [[ -f "$target" ]]; then
+    magic="$(head -c 4 "$target")" || true # unreadable file == no magic
+    if [[ "$magic" == "GGUF" ]]; then
+      info "cached:" "$file" >&2
+      return
+    fi
+    rm -f "$target"
+    info "removed:" "invalid cached file, re-downloading" >&2
+  fi
+
+  local url="https://huggingface.co/$repo/resolve/main/$file"
+  local http_code
+  # HEAD probe for a clear error before the download starts.
+  http_code="$(curl -sI -o /dev/null -w '%{http_code}' "$url")" || http_code="000"
+  [[ "$http_code" == 200 || "$http_code" == 302 ]] ||
+    die "file not found on HF (HTTP $http_code): $repo/$file"
+
+  info "download:" "$file" >&2
+  mkdir -p "${target%/*}"
+  curl -L -C - --progress-bar -o "$target" "$url" ||
+    die "failed to download $repo/$file"
+
+  magic="$(head -c 4 "$target")" || true
+  [[ "$magic" == "GGUF" ]] || {
+    rm -f "$target"
+    die "downloaded file is not a valid GGUF: $repo/$file"
+  }
+}
+
+# Download one file from an HF repo into target (resumable). Reuses an
+# existing non-empty copy. Unlike hf_download there is no content
+# validation — MLX repos hold many file types (safetensors, json, tokenizer
+# data).
+hf_download_raw() {
+  local repo="$1" file="$2" target="$3"
+
+  if [[ -s "$target" ]]; then
+    info "cached:" "$file" >&2
+    return
+  fi
+
+  info "download:" "$file" >&2
+  mkdir -p "${target%/*}"
+  curl -sfL -C - --progress-bar -o "$target" \
+    "https://huggingface.co/$repo/resolve/main/$file" ||
+    die "failed to download $repo/$file"
+}
+
+# ── Model resolution: GGUF (llama-server) ─────────────────
+
+# Strip a GGUF split suffix (-00001-of-00003.gguf) or a plain .gguf
+# extension, yielding a key shared by every shard of one quant. Sets
+# shard_key (caller-read; avoids a subshell in the selection loops).
 strip_shard() {
-  local f="$1"
-  if [[ "$f" =~ ^(.*)-[0-9]+-of-[0-9]+\.gguf$ ]]; then
-    printf '%s' "${BASH_REMATCH[1]}"
+  if [[ "$1" =~ ^(.*)-[0-9]+-of-[0-9]+\.gguf$ ]]; then
+    shard_key="${BASH_REMATCH[1]}"
   else
-    printf '%s' "${f%.gguf}"
+    shard_key="${1%.gguf}"
   fi
 }
 
@@ -107,137 +293,159 @@ select_gguf_files() {
   shift 3
   local -a all=("$@")
   local -a want=()
-  local f
+  local f shard_key
 
   if [[ "$sel" == *.gguf ]]; then
     # Explicit filename: pull in sibling shards if it is part of a split set.
     local key
-    key="$(strip_shard "$sel")"
+    strip_shard "$sel"
+    key="$shard_key"
     for f in "${all[@]}"; do
-      [[ "$(strip_shard "$f")" == "$key" ]] && want+=("$f")
+      strip_shard "$f"
+      [[ "$shard_key" == "$key" ]] && want+=("$f")
     done
     # Trust the literal name if the listing did not surface it.
     [[ ${#want[@]} -gt 0 ]] || want=("$sel")
   else
-    # Quant label: case-insensitive substring match against the listing.
+    # Quant label, matched case-insensitively against the listing.
     [[ ${#all[@]} -gt 0 ]] || {
       printf "error: cannot resolve quant '%s': no GGUF listing for %s\n" "$sel" "$repo" >&2
       return 1
     }
 
     local sel_lc="${sel,,}"
-    # The label must appear delimited by [-_.] (or an edge) in the basename:
-    # 'F16' matches '…-F16.gguf' and 'mmproj-F16.gguf' but not '…-BF16.gguf',
-    # which a bare substring test would quietly pick once projectors stop
-    # rivalling it into the ambiguity error.
-    local sel_re
-    sel_re="$(printf '%s' "$sel_lc" | sed 's/[^[:alnum:]]/[&]/g')"
     local -a matches=()
     for f in "${all[@]}"; do
-      local base="${f##*/}" base_lc
-      base_lc="${base,,}"
+      local base_lc="${f##*/}"
+      base_lc="${base_lc,,}"
       case "$kind" in
       mmproj) [[ "$base_lc" == mmproj* ]] || continue ;;
       *) [[ "$base_lc" == mmproj* ]] && continue ;;
       esac
-      [[ "$base_lc" =~ (^|[-_.])$sel_re([-_.]|$) ]] && matches+=("$f")
+      # The label must appear delimited by [-_.] or an edge: 'F16' matches
+      # '…-F16.gguf' but not '…-BF16.gguf', which a bare substring test
+      # would quietly pick. "$sel_lc" is quoted, so it matches literally;
+      # the extglob alternations supply the optional delimited context.
+      [[ "$base_lc" == @(|*[-_.])"$sel_lc"@(|[-_.]*) ]] && matches+=("$f")
     done
     [[ ${#matches[@]} -gt 0 ]] || {
       printf "error: no GGUF matching quant '%s' in %s. Available:\n" "$sel" "$repo" >&2
-      printf '%s\n' "${all[@]}" | LC_ALL=C sort | sed 's/^/  /' >&2
+      printf '  %s\n' "${all[@]}" | LC_ALL=C sort >&2
       return 1
     }
 
     # Collapse shards: group matches by quant key.
     local -A keyset=()
-    for f in "${matches[@]}"; do keyset["$(strip_shard "$f")"]=1; done
+    for f in "${matches[@]}"; do
+      strip_shard "$f"
+      keyset["$shard_key"]=1
+    done
 
-    local chosen=""
-    if [[ ${#keyset[@]} -eq 1 ]]; then
-      for chosen in "${!keyset[@]}"; do :; done
-    else
+    local -a keys=("${!keyset[@]}")
+    local k
+    if [[ ${#keys[@]} -gt 1 ]]; then
       # Tie-break: prefer the single quant whose name ends with the label
       # (e.g. 'Q6_K' over 'Q6_K_XL').
-      local k
-      local -a ends=()
+      keys=()
       for k in "${!keyset[@]}"; do
         local kb="${k##*/}"
-        [[ "${kb,,}" == *"$sel_lc" ]] && ends+=("$k")
+        [[ "${kb,,}" == *"$sel_lc" ]] && keys+=("$k")
       done
-      if [[ ${#ends[@]} -eq 1 ]]; then
-        chosen="${ends[0]}"
-      else
-        printf "error: quant '%s' is ambiguous in %s; matches:\n" "$sel" "$repo" >&2
-        printf '%s\n' "${!keyset[@]}" | sed 's#.*/##' | LC_ALL=C sort | sed 's/^/  /' >&2
-        printf 'specify a more precise quant or the full filename.\n' >&2
-        return 1
-      fi
     fi
+    if [[ ${#keys[@]} -ne 1 ]]; then
+      printf "error: quant '%s' is ambiguous in %s; matches:\n" "$sel" "$repo" >&2
+      local -a bases=()
+      for k in "${!keyset[@]}"; do bases+=("${k##*/}"); done
+      printf '  %s\n' "${bases[@]}" | LC_ALL=C sort >&2
+      printf 'specify a more precise quant or the full filename.\n' >&2
+      return 1
+    fi
+    local chosen="${keys[0]}"
 
     for f in "${matches[@]}"; do
-      [[ "$(strip_shard "$f")" == "$chosen" ]] && want+=("$f")
+      strip_shard "$f"
+      [[ "$shard_key" == "$chosen" ]] && want+=("$f")
     done
   fi
 
   printf '%s\n' "${want[@]}" | LC_ALL=C sort
 }
 
-# Download a single GGUF file from HF into target (resumable), verifying its
-# magic bytes. Reuses a valid cached copy. All output goes to stderr.
-hf_download() {
-  local repo="$1" file="$2" target="$3"
-  local magic
+# Resolve a model spec to a local GGUF file path, downloading from HF as
+# needed. Accepts:
+#   /path/to/model.gguf    → local file, used directly
+#   org/repo:file.gguf     → that exact file (plus sibling shards if split)
+#   org/repo:QUANT         → file matching the quant label (e.g. Q4_K_M)
+#   org/repo               → lists available GGUF files in the repo
+# Split models: all shards are fetched and the first shard's path is
+# returned; llama-server loads the rest from the same directory.
+# $2 (default 'model') scopes quant matching — see select_gguf_files.
+resolve_model() {
+  local spec="$1" kind="${2:-model}"
 
-  if [[ -f "$target" ]]; then
-    # NOTE: Not smart enough to detect truncated downloads.
-    magic="$(head -c 4 "$target")" || true
-    if [[ "$magic" == "GGUF" ]]; then
-      info "cached:" "$file" >&2
-      return
-    fi
-    rm -f "$target"
-    info "removed:" "invalid cached file, re-downloading" >&2
-  fi
-
-  local url="https://huggingface.co/$repo/resolve/main/$file"
-  local http_code
-  http_code="$(curl -sfI -o /dev/null -w '%{http_code}' "$url")" || http_code="000"
-  [[ "$http_code" == 200 || "$http_code" == 302 ]] ||
-    die "file not found on HF (HTTP $http_code): $repo/$file"
-
-  info "download:" "$file" >&2
-  mkdir -p "$(dirname "$target")"
-  curl -L -C - --progress-bar -o "$target" "$url" ||
-    die "failed to download $repo/$file"
-
-  magic="$(head -c 4 "$target")" || true
-  [[ "$magic" == "GGUF" ]] || {
-    rm -f "$target"
-    die "downloaded file is not a valid GGUF: $repo/$file"
-  }
-}
-
-# Download one file from an HF repo into target (resumable). Reuses an
-# existing non-empty copy. Unlike hf_download there is no content validation —
-# MLX repos hold many file types (safetensors, json, tokenizer data).
-# NOTE: Not smart enough to detect truncated downloads.
-hf_download_raw() {
-  local repo="$1" file="$2" target="$3"
-
-  if [[ -s "$target" ]]; then
-    info "cached:" "$file" >&2
+  # Local file path
+  if [[ -f "$spec" ]]; then
+    abspath "$spec"
     return
   fi
 
-  info "download:" "$file" >&2
-  mkdir -p "$(dirname "$target")"
-  curl -sfL -C - --progress-bar -o "$target" \
-    "https://huggingface.co/$repo/resolve/main/$file" ||
-    die "failed to download $repo/$file"
+  # Must look like an HF ref: org/repo[...], not an absolute path.
+  [[ "$spec" == */* && "$spec" != /* ]] ||
+    die "model not found: $spec (use a local path, org/repo:file.gguf, or org/repo:QUANT)"
+
+  local repo="$spec" sel=""
+  if [[ "$spec" == *:* ]]; then
+    repo="${spec%%:*}"
+    sel="${spec#*:}"
+  fi
+
+  # GGUF files available in the repo (may include subfolders).
+  local listing
+  listing="$(hf_listing "$repo" '\.gguf')" || listing=""
+
+  # Offline fallback: resolve against the GGUFs already downloaded for this
+  # repo, so a quant spec keeps working without network once fetched.
+  # (hf_download then finds them cached; a quant that only exists upstream
+  # still dies at download, as it must.)
+  if [[ -z "$listing" && -d "$MODELS_DIR/$repo" ]]; then
+    listing="$(cd "$MODELS_DIR/$repo" && find . -name '*.gguf' | sed 's|^\./||')"
+    [[ -n "$listing" ]] && info "offline:" "resolving against local files for $repo" >&2
+  fi
+
+  # Bare repo (no selection): list available files and exit.
+  if [[ -z "$sel" ]]; then
+    [[ -n "$listing" ]] || die "no GGUF files found in $repo"
+    printf 'Available GGUF files in %s:\n' "$repo" >&2
+    LC_ALL=C sort <<<"$listing" | sed 's/^/  /' >&2
+    printf '\nUse: --model %s:<filename>  or  --model %s:<QUANT>\n' "$repo" "$repo" >&2
+    exit 1
+  fi
+
+  local -a all=()
+  split_lines "$listing" all
+
+  info "resolving:" "$repo:$sel" >&2
+  local files_out
+  files_out="$(select_gguf_files "$repo" "$sel" "$kind" "${all[@]}")" || exit 1
+
+  local -a want=()
+  split_lines "$files_out" want
+  [[ ${#want[@]} -gt 1 ]] && info "split:" "${#want[@]} shards" >&2
+
+  local f target first=""
+  for f in "${want[@]}"; do
+    target="$MODELS_DIR/$repo/$f"
+    hf_download "$repo" "$f" "$target"
+    [[ -z "$first" ]] && first="$target"
+  done
+
+  printf '%s' "$first"
 }
 
-# Resolve an MLX model spec to a local model directory, downloading from HF as
-# needed. Accepts:
+# ── Model resolution: MLX (mlx-server) ────────────────────
+
+# Resolve an MLX model spec to a local model directory, downloading from HF
+# as needed. Accepts:
 #   /path/to/model-dir     → local directory, used directly
 #   org/repo               → full repo download (an MLX model is a directory:
 #                            config.json, tokenizer files, *.safetensors)
@@ -248,7 +456,9 @@ resolve_mlx_model() {
   if [[ -d "$spec" ]]; then
     [[ -f "$spec/config.json" ]] ||
       die "not an MLX model directory (no config.json): $spec"
-    printf '%s' "$(cd "$spec" && pwd)"
+    local dir
+    dir="$(CDPATH='' cd -P -- "$spec" && pwd)" || die "cannot resolve path: $spec"
+    printf '%s' "$dir"
     return
   fi
 
@@ -268,11 +478,8 @@ resolve_mlx_model() {
     return
   fi
 
-  # All files in the repo (rfilenames, may include subfolders).
   local listing
-  listing="$(curl -sf "https://huggingface.co/api/models/$spec" |
-    grep -o '"rfilename":"[^"]*"' |
-    sed 's/"rfilename":"//;s/"//')" || listing=""
+  listing="$(hf_listing "$spec")" || listing=""
 
   # Offline fallback for a download that predates the marker: a local copy
   # with a config.json is plausibly complete — use it (the server fails
@@ -307,166 +514,87 @@ resolve_mlx_model() {
   printf '%s' "$target_dir"
 }
 
-# Resolve a model spec to a local GGUF file path, downloading from HF as needed.
-# Accepts:
-#   /path/to/model.gguf    → local file, used directly
-#   org/repo:file.gguf     → that exact file (plus sibling shards if split)
-#   org/repo:QUANT         → file matching the quant label (e.g. Q4_K_M, UD-Q8_K_XL)
-#   org/repo               → lists available GGUF files in the repo
-# Split models: all shards are fetched and the first shard's path is returned;
-# llama-server loads the rest from the same directory.
-# $2 (default 'model') scopes quant matching — see select_gguf_files.
-resolve_model() {
-  local spec="$1" kind="${2:-model}"
+# Seed an HF hub cache entry for a side-loaded repo download. The mlx
+# servers list (/v1/models) and resolve models through huggingface_hub's
+# cache, so a symlinked cache entry makes them treat the download as if it
+# came from the hub — offline: clients can auto-discover the model and
+# address it by its repo id. Rebuilt from scratch on every start. Layout:
+#   hub/models--{org}--{name}/refs/main           → pseudo revision
+#   hub/models--{org}--{name}/snapshots/<rev>/<f> → models/<repo>/<f>
+seed_hf_cache() {
+  local repo="$1" model_dir="$2"
+  : "${HF_HOME:?seed_hf_cache requires HF_HOME}"
+  local entry="$HF_HOME/hub/models--${repo//\//--}"
+  # Content-addressing is irrelevant locally, but the ref must name an
+  # existing snapshot directory and look like a commit hash.
+  local rev="0000000000000000000000000000000000000000"
 
-  # Local file path
-  if [[ -f "$spec" ]]; then
-    printf '%s' "$(cd "$(dirname "$spec")" && pwd)/$(basename "$spec")"
-    return
-  fi
+  rm -rf "$entry"
+  mkdir -p "$entry/refs" "$entry/snapshots/$rev"
+  printf '%s' "$rev" >"$entry/refs/main"
 
-  # Must look like an HF ref: org/repo[...], not an absolute path.
-  [[ "$spec" == */* && "$spec" != /* ]] ||
-    die "model not found: $spec (use a local path, org/repo:file.gguf, or org/repo:QUANT)"
-
-  local repo sel
-  if [[ "$spec" == *:* ]]; then
-    repo="${spec%%:*}"
-    sel="${spec#*:}"
-  else
-    repo="$spec"
-    sel=""
-  fi
-
-  # GGUF files available in the repo (rfilenames, may include subfolders).
-  local listing
-  listing="$(curl -sf "https://huggingface.co/api/models/$repo" |
-    grep -o '"rfilename":"[^"]*\.gguf"' |
-    sed 's/"rfilename":"//;s/"//')" || listing=""
-
-  # Offline fallback: resolve against the GGUFs already downloaded for this
-  # repo, so a quant spec keeps working without network once fetched.
-  # (hf_download then finds them cached; a quant that only exists upstream
-  # still dies at download, as it must.)
-  if [[ -z "$listing" && -d "$MODELS_DIR/$repo" ]]; then
-    listing="$(cd "$MODELS_DIR/$repo" && find . -name '*.gguf' | sed 's|^\./||')"
-    [[ -n "$listing" ]] && info "offline:" "resolving against local files for $repo" >&2
-  fi
-
-  # Bare repo (no selection): list available files and exit.
-  if [[ -z "$sel" ]]; then
-    [[ -n "$listing" ]] || die "no GGUF files found in $repo"
-    printf 'Available GGUF files in %s:\n' "$repo" >&2
-    printf '%s\n' "$listing" | LC_ALL=C sort | sed 's/^/  /' >&2
-    printf '\nUse: --model %s:<filename>  or  --model %s:<QUANT>\n' "$repo" "$repo" >&2
-    exit 1
-  fi
-
-  local -a all=()
-  local line
-  while IFS= read -r line; do [[ -n "$line" ]] && all+=("$line"); done <<<"$listing"
-
-  info "resolving:" "$repo:$sel" >&2
-  local files_out
-  files_out="$(select_gguf_files "$repo" "$sel" "$kind" "${all[@]}")" || exit 1
-
-  local -a want=()
-  while IFS= read -r line; do [[ -n "$line" ]] && want+=("$line"); done <<<"$files_out"
-  [[ ${#want[@]} -gt 1 ]] && info "split:" "${#want[@]} shards" >&2
-
-  local f target first=""
-  for f in "${want[@]}"; do
-    target="$MODELS_DIR/$repo/$f"
-    hf_download "$repo" "$f" "$target"
-    [[ -z "$first" ]] && first="$target"
-  done
-
-  printf '%s' "$first"
+  local f rel dest
+  while IFS= read -r -d '' f; do
+    rel="${f#"$model_dir/"}"
+    dest="$entry/snapshots/$rev/$rel"
+    mkdir -p "${dest%/*}"
+    ln -s "$f" "$dest"
+  done < <(find "$model_dir" -type f ! -name '.*' -print0)
 }
 
-# Locate an executable.
-# Priority: explicit env var > PATH lookup
-resolve_binary() {
-  local env_val="$1" name="$2"
+# ── Server state & client config ──────────────────────────
+# The running server's identity is recorded in $STATE_DIR/server-state (a
+# key=value file that load_server_state sources; trusted because STATE_DIR
+# is owned by this script). Client subcommands read it to build matching
+# configuration.
 
-  if [[ -n "$env_val" ]]; then
-    [[ -x "$env_val" ]] || die "$name not executable: $env_val"
-    printf '%s' "$(cd "$(dirname "$env_val")" && pwd)/$(basename "$env_val")"
-    return
-  fi
-
-  local path
-  if path="$(command -v "$name" 2>/dev/null)"; then
-    printf '%s' "$path"
-    return
-  fi
-
-  die "$name not found on PATH. Install it or set ${name^^} env var."
-}
-
-# Detect the package store prefix from a binary path.
-# Returns /nix for Nix, /opt/homebrew for Homebrew.
-pkg_store_for() {
-  local bin="$1"
-  case "$bin" in
-  /nix/*) printf '/nix' ;;
-  /opt/homebrew/*) printf '/opt/homebrew' ;;
-  *)
-    echo "cannot determine package store for: $bin" >&2
-    printf ""
-    ;;
-  esac
-}
-
-# Write server state so cmd_opencode/cmd_pi can generate a matching config.
-# $2 is the model id clients must send on the wire; it defaults to the alias
-# (llama-server serves under --alias) but differs for the mlx servers.
-# $3 is the backend (llama|mlx); cmd_pi configures pi differently per
-# backend (llama-cpp plugin vs. a plain OpenAI-compatible provider).
-write_llama_state() {
-  local alias="$1" model_id="${2:-$1}" backend="${3:-llama}"
+# Record the server the client subcommands should target. $2 is the model
+# id clients must send on the wire; it defaults to the alias (llama-server
+# serves under --alias) but differs for the mlx servers. $3 is the backend
+# (llama|mlx).
+write_server_state() {
+  local model_alias="$1" model_id="${2:-$1}" backend="${3:-llama}"
   mkdir -p "$STATE_DIR"
-  cat >"$STATE_DIR/llama-state" <<EOF
-LLAMA_ALIAS=$alias
-LLAMA_PORT=$PORT
-LLAMA_MODEL_ID=$model_id
-LLAMA_BACKEND=$backend
-EOF
+  # %q so arbitrary names survive the round-trip through source(1); tmp+mv
+  # so a concurrent reader never sees a half-written file.
+  printf 'SERVER_ALIAS=%q\nSERVER_PORT=%q\nSERVER_MODEL_ID=%q\nSERVER_BACKEND=%q\n' \
+    "$model_alias" "$PORT" "$model_id" "$backend" >"$STATE_DIR/server-state.tmp.$$"
+  mv "$STATE_DIR/server-state.tmp.$$" "$STATE_DIR/server-state"
 }
 
-# Generate opencode.json in the given directory from llama-server state.
-# Counterpart of write_llama_state: sets LLAMA_ALIAS, LLAMA_PORT,
-# LLAMA_MODEL_ID and LLAMA_BACKEND, normalizing defaults for records that
+# Counterpart of write_server_state: sets SERVER_ALIAS, SERVER_PORT,
+# SERVER_MODEL_ID and SERVER_BACKEND, normalizing defaults for records that
 # predate the newer fields. Returns 1 when no state exists.
-load_llama_state() {
-  [[ -f "$STATE_DIR/llama-state" ]] || return 1
+load_server_state() {
+  [[ -f "$STATE_DIR/server-state" ]] || return 1
   # shellcheck source=/dev/null
-  source "$STATE_DIR/llama-state"
-  LLAMA_PORT="${LLAMA_PORT:-$PORT}"
-  LLAMA_MODEL_ID="${LLAMA_MODEL_ID:-$LLAMA_ALIAS}"
-  LLAMA_BACKEND="${LLAMA_BACKEND:-llama}"
+  source "$STATE_DIR/server-state"
+  SERVER_PORT="${SERVER_PORT:-$PORT}"
+  SERVER_MODEL_ID="${SERVER_MODEL_ID:-${SERVER_ALIAS:-}}"
+  SERVER_BACKEND="${SERVER_BACKEND:-llama}"
 }
 
+# Generate opencode.json in the given directory from the recorded state.
 generate_opencode_config() {
   local target_dir="$1"
 
-  load_llama_state || die "no server state found — start llama-server or mlx-server first"
+  load_server_state || die "no server state found — start llama-server or mlx-server first"
 
   cat >"$target_dir/opencode.json" <<EOF
 {
   "\$schema": "https://opencode.ai/config.json",
-  "model": "llama/$LLAMA_MODEL_ID",
+  "model": "llama/$SERVER_MODEL_ID",
   "provider": {
     "llama": {
       "npm": "@ai-sdk/openai-compatible",
       "name": "llama.cpp (local)",
       "options": {
-        "baseURL": "http://127.0.0.1:$LLAMA_PORT/v1",
+        "baseURL": "http://127.0.0.1:$SERVER_PORT/v1",
         "apiKey": "dummy"
       },
       "models": {
-        "$LLAMA_MODEL_ID": {
-          "name": "$LLAMA_ALIAS",
+        "$SERVER_MODEL_ID": {
+          "name": "$SERVER_ALIAS",
           "tool_call": true
         }
       }
@@ -478,55 +606,48 @@ EOF
 }
 
 # ── Subcommands ───────────────────────────────────────────
-# Network personality for the server sandboxes: NET_SB is the profile
-# snippet imported via (import (param "NET_SB")), NET_TARGET the one filter
-# value it consumes — a TCP address for net-tcp.sb, the socket path for
-# net-unix.sb. TCP by default; prepare_socket flips both.
-NET_SB=""
-NET_TARGET=""
+# Each cmd_* cds into a sandbox-readable directory (the sandboxed process's
+# getcwd() must resolve) and ends in `exec sandbox-exec` with every grant
+# spelled out at the call site — keep it that way: the full parameter set of
+# every sandbox must stay auditable where it is used. The -D blocks share a
+# fixed order: COMMON_SB, NET_*, PKG_STORE, per-command params, -f, argv.
 
-# Switch to the UNIX-socket personality for a --socket path: must end in
-# .sock (all three servers key UNIX-socket mode off that suffix on --host),
-# is made absolute, its directory created, and a stale socket file removed.
-# Sets NET_SB/NET_TARGET; the normalized path is NET_TARGET.
-prepare_socket() {
-  local sock="$1"
-  [[ "$sock" == *.sock ]] || die "--socket path must end in .sock: $sock"
-  [[ "$sock" == /* ]] || sock="$PWD/$sock"
-  mkdir -p "${sock%/*}"
-  rm -f "$sock"
-  NET_SB="$SCRIPT_DIR/net-unix.sb"
-  NET_TARGET="$sock"
+# die unless the option $1 is followed by a value.
+need_arg() { [[ $# -ge 2 ]] || die "$1 requires an argument"; }
+
+# Consume leading -w/--workspace DIR (last wins); sets WORKSPACE and ARGS
+# (the remaining args, passed through to the wrapped tool).
+parse_workspace() {
+  WORKSPACE="$PROJECT_DIR"
+  while [[ "${1:-}" == "-w" || "${1:-}" == "--workspace" ]]; do
+    need_arg "$@"
+    WORKSPACE="$2"
+    shift 2
+  done
+  ARGS=("$@")
 }
 
 cmd_llama() {
-  # Extract --model/--mmproj/--socket, pass everything else through
-  local extra_args=() socket=""
+  # Consumes --model/--mmproj/--socket; everything else passes through.
+  # MODEL/MMPROJ are intentionally global: the flags override the env vars.
+  local -a extra_args=()
+  local socket=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-    --model)
-      MODEL="$2"
-      shift 2
-      ;;
-    --mmproj)
-      MMPROJ="$2"
-      shift 2
-      ;;
-    --socket)
-      socket="$2"
-      shift 2
-      ;;
-    *)
-      extra_args+=("$1")
-      shift
-      ;;
+    --model) need_arg "$@"; MODEL="$2"; shift 2 ;;
+    --mmproj) need_arg "$@"; MMPROJ="$2"; shift 2 ;;
+    --socket) need_arg "$@"; socket="$2"; shift 2 ;;
+    *) extra_args+=("$1"); shift ;;
     esac
   done
-
   [[ -n "${MODEL:-}" ]] || die "no model specified — use --model or set MODEL env var"
 
-  local model_path
+  local model_path model_dir model_alias llama_server pkg_store
   model_path="$(resolve_model "$MODEL")"
+  model_dir="${model_path%/*}"
+  model_alias="${model_dir##*/}"
+  llama_server="$(resolve_binary "${LLAMA_SERVER:-}" llama-server LLAMA_SERVER)"
+  pkg_store="$(pkg_store_for "$llama_server")"
 
   # A vision model is served from two GGUFs: the model plus a multimodal
   # projector (mmproj-*.gguf). llama-server only auto-fetches the projector
@@ -536,41 +657,27 @@ cmd_llama() {
   local mmproj_path="" mmproj_dir=""
   if [[ -n "${MMPROJ:-}" ]]; then
     mmproj_path="$(resolve_model "$MMPROJ" mmproj)"
-    mmproj_dir="$(dirname "$mmproj_path")"
+    mmproj_dir="${mmproj_path%/*}"
   fi
-
-  local llama_server
-  llama_server="$(resolve_binary "${LLAMA_SERVER:-}" "llama-server")"
-
-  local model_dir
-  model_dir="$(dirname "$model_path")"
-
-  local alias
-  alias="$(basename "$model_dir")"
 
   mkdir -p "$CACHE_DIR" "$TMPDIR"
   export TMPDIR
-  write_llama_state "$alias"
+  write_server_state "$model_alias"
 
-  local -a server_args=(--model "$model_path" --alias "$alias" --port "$PORT")
+  local -a server_args=(--model "$model_path" --alias "$model_alias" --port "$PORT")
   [[ -n "$mmproj_path" ]] && server_args+=(--mmproj "$mmproj_path")
-  NET_SB="$SCRIPT_DIR/net-tcp.sb"
-  NET_TARGET="*:$PORT"
-  if [[ -n "$socket" ]]; then
-    prepare_socket "$socket"
-    server_args+=(--host "$NET_TARGET")
-  fi
+  select_net "$socket"
+  [[ -n "$socket" ]] && server_args+=(--host "$NET_TARGET")
 
   printf 'Starting sandboxed llama-server:\n'
   info "binary:" "$llama_server"
   info "model:" "$model_path"
   [[ -n "$mmproj_path" ]] && info "mmproj:" "$mmproj_path"
-  info "alias:" "$alias"
+  info "alias:" "$model_alias"
   info "port:" "$PORT"
   info "extra:" "${extra_args[*]:-none}"
   printf '\n'
 
-  # cd to an allowed dir so llama-server's getcwd() succeeds inside the sandbox
   cd "$CACHE_DIR"
 
   # MMPROJ_DIR falls back to MODEL_DIR when no projector is given:
@@ -579,7 +686,7 @@ cmd_llama() {
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
     -D NET_SB="$NET_SB" \
     -D NET_TARGET="$NET_TARGET" \
-    -D PKG_STORE="$(pkg_store_for "$llama_server")" \
+    -D PKG_STORE="$pkg_store" \
     -D LLAMA_SERVER="$llama_server" \
     -D MODEL_DIR="$model_dir" \
     -D MMPROJ_DIR="${mmproj_dir:-$model_dir}" \
@@ -589,52 +696,18 @@ cmd_llama() {
     "$llama_server" "${server_args[@]}" "${extra_args[@]}"
 }
 
-# Seed an HF hub cache entry for a side-loaded repo download. The mlx
-# servers list (/v1/models) and resolve models through huggingface_hub's
-# cache, so a symlinked cache entry makes them treat the download as if it
-# came from the hub — offline: clients can auto-discover the model and
-# address it by its repo id. Layout:
-#   hub/models--{org}--{name}/refs/main           → pseudo revision
-#   hub/models--{org}--{name}/snapshots/<rev>/<f> → models/<repo>/<f>
-seed_hf_cache() {
-  local repo="$1" model_dir="$2"
-  local entry="$HF_HOME/hub/models--${repo//\//--}"
-  # Content-addressing is irrelevant locally, but the ref must name an
-  # existing snapshot directory and look like a commit hash.
-  local rev="0000000000000000000000000000000000000000"
-
-  rm -rf "$entry"
-  mkdir -p "$entry/refs" "$entry/snapshots/$rev"
-  printf '%s' "$rev" >"$entry/refs/main"
-
-  local f rel
-  while IFS= read -r f; do
-    rel="${f#"$model_dir/"}"
-    mkdir -p "$entry/snapshots/$rev/$(dirname "$rel")"
-    ln -s "$f" "$entry/snapshots/$rev/$rel"
-  done < <(find "$model_dir" -type f ! -name '.*')
-}
-
 cmd_mlx() {
-  # Extract --model/--socket, pass everything else through to the server
-  local extra_args=() socket=""
+  # Consumes --model/--socket; everything else passes through.
+  # MODEL is intentionally global: the flag overrides the env var.
+  local -a extra_args=()
+  local socket=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-    --model)
-      MODEL="$2"
-      shift 2
-      ;;
-    --socket)
-      socket="$2"
-      shift 2
-      ;;
-    *)
-      extra_args+=("$1")
-      shift
-      ;;
+    --model) need_arg "$@"; MODEL="$2"; shift 2 ;;
+    --socket) need_arg "$@"; socket="$2"; shift 2 ;;
+    *) extra_args+=("$1"); shift ;;
     esac
   done
-
   [[ -n "${MODEL:-}" ]] || die "no model specified — use --model or set MODEL env var"
 
   local model_dir
@@ -642,9 +715,9 @@ cmd_mlx() {
 
   mkdir -p "$CACHE_DIR" "$TMPDIR"
   export TMPDIR
-  # Root ~-relative state (HF hub cache scans etc.) inside the writable cache.
-  # The hub/ subdir must exist even when empty: /v1/models scans it and 500s
-  # (CacheNotFound) when it's missing.
+  # Root ~-relative state (HF hub cache scans etc.) inside the writable
+  # cache. The hub/ subdir must exist even when empty: /v1/models scans it
+  # and 500s (CacheNotFound) when it's missing.
   export HOME="$CACHE_DIR/mlx-home"
   export HF_HOME="$HOME/huggingface"
   mkdir -p "$HF_HOME/hub"
@@ -665,65 +738,52 @@ cmd_mlx() {
   # A config.json carrying a vision tower marks a VLM. mlx_lm.server is
   # text-only, so those go to mlx-vlm's OpenAI-compatible server instead.
   # Unlike llama.cpp there is no separate projector file: the full-repo
-  # download above already includes the vision weights.
-  local mlx_server model_id
+  # download above already includes the vision weights. Either way the wire
+  # model id must equal what the server was started with (the servers key
+  # their model cache on that string).
+  local mlx_server model_id="$serve_ref"
   if grep -q '"vision_config"' "$model_dir/config.json"; then
-    mlx_server="$(resolve_binary "${MLX_VLM_SERVER:-}" "mlx_vlm.server")"
-    # mlx_vlm.server loads whatever the request's `model` field names and
-    # keys its cache on that string (--model merely pre-warms it), so the
-    # wire id must equal what the server was started with.
-    model_id="$serve_ref"
+    mlx_server="$(resolve_binary "${MLX_VLM_SERVER:-}" mlx_vlm.server MLX_VLM_SERVER)"
   else
-    mlx_server="$(resolve_binary "${MLX_SERVER:-}" "mlx_lm.server")"
-    # mlx_lm.server maps the literal "default_model" to its --model; with a
-    # seeded cache the repo id resolves too — to the same loaded instance —
-    # so prefer it on the wire. A path-served model keeps "default_model".
-    model_id="$serve_ref"
+    mlx_server="$(resolve_binary "${MLX_SERVER:-}" mlx_lm.server MLX_SERVER)"
+    # mlx_lm.server only maps the literal "default_model" to its --model
+    # when that is a path (a repo id resolves through the seeded cache).
     [[ "$serve_ref" == "$model_dir" ]] && model_id="default_model"
   fi
 
-  local alias
-  alias="$(basename "$model_dir")"
+  local pkg_store model_alias="${model_dir##*/}"
+  pkg_store="$(pkg_store_for "$mlx_server")"
+  write_server_state "$model_alias" "$model_id" mlx
+  resolve_ca_file
 
-  write_llama_state "$alias" "$model_id" mlx
-
-  printf 'Starting sandboxed %s:\n' "$(basename "$mlx_server")"
+  printf 'Starting sandboxed %s:\n' "${mlx_server##*/}"
   info "binary:" "$mlx_server"
   info "model:" "$serve_ref"
-  info "alias:" "$alias"
+  info "alias:" "$model_alias"
   info "port:" "$PORT"
   info "extra:" "${extra_args[*]:-none}"
   printf '\n'
-
-  local ca_file="/dev/null"
-  if [[ -n "${NIX_SSL_CERT_FILE:-}" && "$NIX_SSL_CERT_FILE" != "/no-cert-file.crt" ]]; then
-    ca_file="$(realpath "$NIX_SSL_CERT_FILE" 2>/dev/null || echo /dev/null)"
-    [[ "$ca_file" != "/dev/null" ]] && export NIX_SSL_CERT_FILE="$ca_file"
-  fi
-
-  # cd to an allowed dir so the server's getcwd() succeeds inside the sandbox
-  cd "$CACHE_DIR"
 
   # --host pins mlx_vlm.server to loopback (it defaults to 0.0.0.0;
   # mlx_lm.server already defaults to 127.0.0.1); both patched servers adopt
   # llama-server's convention of a UNIX socket when --host ends in .sock.
   # Extra args come last so they can override.
   local -a server_args=(--model "$serve_ref" --port "$PORT")
-  NET_SB="$SCRIPT_DIR/net-tcp.sb"
-  NET_TARGET="*:$PORT"
+  select_net "$socket"
   if [[ -n "$socket" ]]; then
-    prepare_socket "$socket"
     server_args+=(--host "$NET_TARGET")
   else
     server_args+=(--host 127.0.0.1)
   fi
 
+  cd "$CACHE_DIR"
+
   exec sandbox-exec \
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
     -D NET_SB="$NET_SB" \
     -D NET_TARGET="$NET_TARGET" \
-    -D PKG_STORE="$(pkg_store_for "$mlx_server")" \
-    -D CA_FILE="$ca_file" \
+    -D PKG_STORE="$pkg_store" \
+    -D CA_FILE="$CA_FILE" \
     -D MODEL_DIR="$model_dir" \
     -D CACHE_DIR="$CACHE_DIR" \
     -D TMPDIR="$TMPDIR" \
@@ -732,17 +792,7 @@ cmd_mlx() {
 }
 
 cmd_opencode() {
-  local workspace="$PROJECT_DIR"
-
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-    -w | --workspace)
-      workspace="$2"
-      shift 2
-      ;;
-    *) break ;;
-    esac
-  done
+  parse_workspace "$@"
 
   mkdir -p "$CACHE_DIR" "$TMPDIR"
   export TMPDIR
@@ -754,56 +804,47 @@ cmd_opencode() {
   export OPENCODE_DISABLE_EXTERNAL_SKILLS=1
   export OPENCODE_DISABLE_TERMINAL_TITLE=1
 
-  generate_opencode_config "$workspace"
+  generate_opencode_config "$WORKSPACE"
 
-  local opencode_bin
-  opencode_bin="$(resolve_binary "${OPENCODE:-}" "opencode")"
+  local opencode_bin pkg_store
+  opencode_bin="$(resolve_binary "${OPENCODE:-}" opencode OPENCODE)"
+  pkg_store="$(pkg_store_for "$opencode_bin")"
 
+  # Node-based TUIs open many fds; raise the limit to the macOS maximum.
   ulimit -n 2147483646
 
-  # cd to an allowed dir so opencode's getcwd() succeeds inside the sandbox
-  cd "$workspace"
+  cd "$WORKSPACE"
 
   exec sandbox-exec \
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
-    -D PKG_STORE="$(pkg_store_for "$opencode_bin")" \
-    -D WORKSPACE="$workspace" \
-    -D OPENCODE_DIR="$STATE_DIR" \
+    -D PKG_STORE="$pkg_store" \
+    -D WORKSPACE="$WORKSPACE" \
+    -D STATE_DIR="$STATE_DIR" \
     -f "$SCRIPT_DIR/opencode.sb" \
-    "$opencode_bin" "$@"
+    "$opencode_bin" "${ARGS[@]}"
 }
 
 cmd_pi() {
-  local workspace="$PROJECT_DIR"
-
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-    -w | --workspace)
-      workspace="$2"
-      shift 2
-      ;;
-    *) break ;;
-    esac
-  done
+  parse_workspace "$@"
 
   # Reuse the port the server subcommand recorded so the plugin below
-  # matches a running instance.
+  # targets the running instance.
   local llama_port="$PORT"
-  if load_llama_state; then
-    llama_port="$LLAMA_PORT"
+  if load_server_state; then
+    llama_port="$SERVER_PORT"
   fi
 
-  # pi keeps its state under ~/.pi, so root HOME inside the project dir to keep
-  # writable state local (and out of the read-only store / the real HOME).
+  # pi keeps its state under ~/.pi, so root HOME inside the project dir to
+  # keep writable state local (and out of the read-only store / real HOME).
   local pi_home="$STATE_DIR/pi"
   mkdir -p "$pi_home" "$CACHE_DIR" "$TMPDIR"
   export HOME="$pi_home"
   export TMPDIR
 
-  # The llama-cpp plugin (huggingface/pi-llama) is loaded for the session via
-  # `pi -e <dir>/index.ts`. The Nix wrapper points PI_LLAMA_DIR at the pinned
-  # store copy; outside Nix, set it to a checkout of the repo. The plugin
-  # discovers the server from LLAMA_BASE_URL.
+  # The llama-cpp plugin (huggingface/pi-llama) is loaded for the session
+  # via `pi -e <dir>/index.ts`. The Nix wrapper points PI_LLAMA_DIR at the
+  # pinned store copy; outside Nix, set it to a checkout of the repo. The
+  # plugin discovers the server from LLAMA_BASE_URL.
   local plugin="${PI_LLAMA_DIR:-}/index.ts"
   [[ -n "${PI_LLAMA_DIR:-}" && -f "$plugin" ]] ||
     die "pi llama-cpp plugin not found — set PI_LLAMA_DIR to a dir containing index.ts"
@@ -811,39 +852,40 @@ cmd_pi() {
   export LLAMA_API_KEY="${LLAMA_API_KEY:-dummy}"
 
   # pi probes tmux keyboard setup by spawning `tmux`; the sandbox denies the
-  # exec and the spawn throws synchronously, crashing pi on startup. The probe
-  # is gated on $TMUX, so hide it — tmux-native features can't work sandboxed.
+  # exec and the spawn throws synchronously, crashing pi on startup. The
+  # probe is gated on $TMUX, so hide it.
   unset TMUX
   # Read-only store install behind a network-restricted sandbox: skip pi's
-  # startup network ops (self-update / version check / tool fetch), which can
-  # only fail here. Does not affect the llama-cpp plugin's model discovery,
-  # which talks to LLAMA_BASE_URL independently of this flag.
+  # startup network ops (self-update / version check / tool fetch), which
+  # can only fail here. Does not affect the plugin's model discovery, which
+  # talks to LLAMA_BASE_URL independently of this flag.
   export PI_OFFLINE=1
 
-  local pi_bin
-  pi_bin="$(resolve_binary "${PI:-}" "pi")"
+  local pi_bin pkg_store
+  pi_bin="$(resolve_binary "${PI:-}" pi PI)"
+  pkg_store="$(pkg_store_for "$pi_bin")"
 
   printf 'Starting sandboxed pi:\n'
   info "binary:" "$pi_bin"
   info "plugin:" "$plugin"
   info "server:" "$LLAMA_BASE_URL"
-  info "workspace:" "$workspace"
+  info "workspace:" "$WORKSPACE"
   printf '\n'
 
+  # Node-based TUIs open many fds; raise the limit to the macOS maximum.
   ulimit -n 2147483646
 
-  # cd to an allowed dir so pi's getcwd() succeeds inside the sandbox
-  cd "$workspace"
+  cd "$WORKSPACE"
 
   exec sandbox-exec \
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
-    -D PKG_STORE="$(pkg_store_for "$pi_bin")" \
-    -D WORKSPACE="$workspace" \
+    -D PKG_STORE="$pkg_store" \
+    -D WORKSPACE="$WORKSPACE" \
     -D PI_DIR="$pi_home" \
     -D PI_LLAMA_DIR="$PI_LLAMA_DIR" \
     -D NET_ADDR="localhost:$llama_port" \
     -f "$SCRIPT_DIR/pi.sb" \
-    "$pi_bin" -e "$plugin" "$@"
+    "$pi_bin" -e "$plugin" "${ARGS[@]}"
 }
 
 cmd_llm() {
@@ -852,17 +894,19 @@ cmd_llm() {
   mkdir -p "$LLM_USER_PATH" "$TMPDIR"
   export TMPDIR
 
-  # Default to llama-server model if no -m flag given
-  echo "llama-server" >"$LLM_USER_PATH/default_model.txt"
+  # Preset the default model to the llm-llama-server plugin's model name;
+  # llm itself handles -m to pick another.
+  printf 'llama-server\n' >"$LLM_USER_PATH/default_model.txt"
 
-  local llm_bin
-  llm_bin="$(resolve_binary "${LLM:-}" "llm")"
+  local llm_bin pkg_store
+  llm_bin="$(resolve_binary "${LLM:-}" llm LLM)"
+  pkg_store="$(pkg_store_for "$llm_bin")"
 
   cd "$LLM_USER_PATH"
 
   exec sandbox-exec \
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
-    -D PKG_STORE="$(pkg_store_for "$llm_bin")" \
+    -D PKG_STORE="$pkg_store" \
     -D LLM_USER_PATH="$LLM_USER_PATH" \
     -D TMPDIR="$TMPDIR" \
     -f "$SCRIPT_DIR/llm.sb" \
