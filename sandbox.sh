@@ -2,9 +2,8 @@
 # Sandbox local AI tools with macOS seatbelt (sandbox-exec).
 #
 # Layout: constants → sandbox helpers → Hugging Face downloads → model
-# resolution (GGUF, MLX) → server state & client config → one cmd_* per
-# subcommand, each ending in `exec sandbox-exec` with every grant spelled
-# out → dispatch.
+# resolution (GGUF, MLX) → one cmd_* per subcommand, each ending in
+# `exec sandbox-exec` with every grant spelled out → dispatch.
 #
 # Subcommand → seatbelt profile (all import common.sb; the servers also
 # import net-tcp.sb or net-unix.sb, chosen by --socket):
@@ -36,10 +35,10 @@ PROG="${SANDBOXED_AI_PROG:-${0##*/}}"
 PROJECT_DIR="${SANDBOXED_AI_HOME:-$PWD}"
 
 # ── Defaults ──────────────────────────────────────────────
-# PORT is fixed (no flag reads it back); the SERVER_PORT state round-trip
-# exists for future variability. STATE_DIR is the shared writable root for
-# every subcommand. TMPDIR stays unexported here; each subcommand exports
-# it for its sandboxed process.
+# PORT is fixed: the servers bind it and the clients dial it, so there is
+# nothing to communicate between runs. STATE_DIR is the shared writable
+# root for every subcommand. TMPDIR stays unexported here; each subcommand
+# exports it for its sandboxed process.
 PORT=8080
 STATE_DIR="$PROJECT_DIR/.sandboxed-ai"
 CACHE_DIR="$STATE_DIR/cache"
@@ -535,38 +534,6 @@ seed_hf_cache() {
   done < <(find "$model_dir" -type f ! -name '.*' -print0)
 }
 
-# ── Server state & client config ──────────────────────────
-# The running server's identity is recorded in $STATE_DIR/server-state (a
-# key=value file that load_server_state sources; trusted because STATE_DIR
-# is owned by this script). Client subcommands read it to build matching
-# configuration.
-
-# Record the server the client subcommands should target. $2 is the model
-# id clients must send on the wire; it defaults to the alias (llama-server
-# serves under --alias) but differs for the mlx servers. $3 is the backend
-# (llama|mlx).
-write_server_state() {
-  local model_alias="$1" model_id="${2:-$1}" backend="${3:-llama}"
-  mkdir -p "$STATE_DIR"
-  # %q so arbitrary names survive the round-trip through source(1); tmp+mv
-  # so a concurrent reader never sees a half-written file.
-  printf 'SERVER_ALIAS=%q\nSERVER_PORT=%q\nSERVER_MODEL_ID=%q\nSERVER_BACKEND=%q\n' \
-    "$model_alias" "$PORT" "$model_id" "$backend" >"$STATE_DIR/server-state.tmp.$$"
-  mv "$STATE_DIR/server-state.tmp.$$" "$STATE_DIR/server-state"
-}
-
-# Counterpart of write_server_state: sets SERVER_ALIAS, SERVER_PORT,
-# SERVER_MODEL_ID and SERVER_BACKEND, normalizing defaults for records that
-# predate the newer fields. Returns 1 when no state exists.
-load_server_state() {
-  [[ -f "$STATE_DIR/server-state" ]] || return 1
-  # shellcheck source=/dev/null
-  source "$STATE_DIR/server-state"
-  SERVER_PORT="${SERVER_PORT:-$PORT}"
-  SERVER_MODEL_ID="${SERVER_MODEL_ID:-${SERVER_ALIAS:-}}"
-  SERVER_BACKEND="${SERVER_BACKEND:-llama}"
-}
-
 # ── Subcommands ───────────────────────────────────────────
 # Each cmd_* cds into a sandbox-readable directory (the sandboxed process's
 # getcwd() must resolve) and ends in `exec sandbox-exec` with every grant
@@ -624,7 +591,6 @@ cmd_llama() {
 
   mkdir -p "$CACHE_DIR" "$TMPDIR"
   export TMPDIR
-  write_server_state "$model_alias"
 
   local -a server_args=(--model "$model_path" --alias "$model_alias" --port "$PORT")
   [[ -n "$mmproj_path" ]] && server_args+=(--mmproj "$mmproj_path")
@@ -703,6 +669,9 @@ cmd_mlx() {
   # download above already includes the vision weights. Either way the wire
   # model id must equal what the server was started with (the servers key
   # their model cache on that string).
+  # model_id is what clients must send in the OpenAI `model` field — the
+  # servers key their model cache on that string. Reported below rather than
+  # recorded: /v1/models serves it to clients that discover.
   local mlx_server model_id="$serve_ref"
   if grep -q '"vision_config"' "$model_dir/config.json"; then
     mlx_server="$(resolve_binary "${MLX_VLM_SERVER:-}" mlx_vlm.server MLX_VLM_SERVER)"
@@ -713,15 +682,14 @@ cmd_mlx() {
     [[ "$serve_ref" == "$model_dir" ]] && model_id="default_model"
   fi
 
-  local pkg_store model_alias="${model_dir##*/}"
+  local pkg_store
   pkg_store="$(pkg_store_for "$mlx_server")"
-  write_server_state "$model_alias" "$model_id" mlx
   resolve_ca_file
 
   printf 'Starting sandboxed %s:\n' "${mlx_server##*/}"
   info "binary:" "$mlx_server"
   info "model:" "$serve_ref"
-  info "alias:" "$model_alias"
+  info "model id:" "$model_id"
   info "port:" "$PORT"
   info "extra:" "${extra_args[*]:-none}"
   printf '\n'
@@ -756,13 +724,6 @@ cmd_mlx() {
 cmd_pi() {
   parse_workspace "$@"
 
-  # Reuse the port the server subcommand recorded so the plugin below
-  # targets the running instance.
-  local llama_port="$PORT"
-  if load_server_state; then
-    llama_port="$SERVER_PORT"
-  fi
-
   # pi keeps its state under ~/.pi, so root HOME inside the project dir to
   # keep writable state local (and out of the read-only store / real HOME).
   local pi_home="$STATE_DIR/pi"
@@ -777,7 +738,7 @@ cmd_pi() {
   local plugin="${PI_LLAMA_DIR:-}/index.ts"
   [[ -n "${PI_LLAMA_DIR:-}" && -f "$plugin" ]] ||
     die "pi llama-cpp plugin not found — set PI_LLAMA_DIR to a dir containing index.ts"
-  export LLAMA_BASE_URL="http://127.0.0.1:$llama_port/v1"
+  export LLAMA_BASE_URL="http://127.0.0.1:$PORT/v1"
   export LLAMA_API_KEY="${LLAMA_API_KEY:-dummy}"
 
   # pi probes tmux keyboard setup by spawning `tmux`; the sandbox denies the
@@ -812,7 +773,7 @@ cmd_pi() {
     -D WORKSPACE="$WORKSPACE" \
     -D PI_DIR="$pi_home" \
     -D PI_LLAMA_DIR="$PI_LLAMA_DIR" \
-    -D NET_ADDR="localhost:$llama_port" \
+    -D NET_ADDR="localhost:$PORT" \
     -f "$SCRIPT_DIR/pi.sb" \
     "$pi_bin" -e "$plugin" "${ARGS[@]}"
 }
