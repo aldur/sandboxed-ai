@@ -1,0 +1,8 @@
+; vim:ft=scheme
+;; TCP network personality — the default import for NET_SB in the server
+;; profiles; net-unix.sb is the --socket alternative and neither grants the
+;; other's surface. NET_TARGET is the address: seatbelt only permits "*" or
+;; "localhost" as its host part; "*" allows binding/accepting the port on
+;; any interface (loopback for host clients, the vmnet bridge for VMs).
+(allow network-bind network-inbound
+  (local tcp (param "NET_TARGET")))

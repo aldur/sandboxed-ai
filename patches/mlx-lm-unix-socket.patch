@@ -1,0 +1,39 @@
+--- a/mlx_lm/server.py	2026-08-03 12:19:44.021491003 +0000
++++ b/mlx_lm/server.py	2026-08-03 20:46:39.467156210 +0000
+@@ -1706,11 +1706,31 @@
+     server_class=ThreadingHTTPServer,
+     handler_class=APIHandler,
+ ):
+-    server_address = (host, port)
+-    infos = socket.getaddrinfo(
+-        *server_address, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
+-    )
+-    server_class.address_family, _, _, _, server_address = next(iter(infos))
++    if host.endswith(".sock"):
++        # Serve on a UNIX domain socket, mirroring llama-server's
++        # `--host *.sock` convention.
++        Path(host).unlink(missing_ok=True)
++
++        class UnixHTTPServer(server_class):
++            address_family = socket.AF_UNIX
++
++            def server_bind(self):
++                self.socket.bind(self.server_address)
++                self.server_name = "localhost"
++                self.server_port = 0
++
++            def get_request(self):
++                request, _ = super().get_request()
++                return request, ("unix", 0)
++
++        server_class = UnixHTTPServer
++        server_address = host
++    else:
++        server_address = (host, port)
++        infos = socket.getaddrinfo(
++            *server_address, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
++        )
++        server_class.address_family, _, _, _, server_address = next(iter(infos))
+     httpd = server_class(
+         server_address,
+         lambda *args, **kwargs: handler_class(

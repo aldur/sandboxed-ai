@@ -92,10 +92,9 @@
   (ipc-posix-name-prefix "com.apple.ane"))
 
 ;; ── Network ──────────────────────────────────────────────
-;; Same shape as llama-server.sb: inbound only on the serving port, outbound
-;; denied. The model is fully local and HF_HUB_OFFLINE=1 is set, so the
-;; server has no reason to dial out.
-(allow network-bind network-inbound
-  (local tcp (param "NET_ADDR")))
+;; Serving personality chosen by sandbox.sh — see net-tcp.sb / net-unix.sb.
+;; Outbound denied: the model is fully local and HF_HUB_OFFLINE=1 is set,
+;; so the server has no reason to dial out.
+(import (param "NET_SB"))
 
 (deny network-outbound (with send-signal SIGKILL))

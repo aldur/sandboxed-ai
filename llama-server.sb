@@ -80,11 +80,7 @@
   (ipc-posix-name-prefix "com.apple.ane"))
 
 ;; ── Network ──────────────────────────────────────────────
-;; Seatbelt only permits "*" or "localhost" as the host in a network
-;; address. This allows binding/accepting that port on any interface (loopback
-;; for host clients, the vmnet bridge for containers). Outbound stays denied
-;; below. `llama-server` by default binds to localhost. 
-(allow network-bind network-inbound
-  (local tcp (param "NET_ADDR")))
+;; Serving personality chosen by sandbox.sh — see net-tcp.sb / net-unix.sb.
+(import (param "NET_SB"))
 
 (deny network-outbound (with send-signal SIGKILL))

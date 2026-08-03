@@ -77,7 +77,22 @@
       # cache hits — stay untouched by the python package-set extensions.
       pkgsMlx = import nixpkgs {
         inherit system;
-        overlays = [ dotfiles.overlays.mlx ];
+        overlays = [
+          dotfiles.overlays.mlx
+          # Serve on a UNIX domain socket when --host ends in .sock,
+          # mirroring llama-server's convention (see sandbox.sh --socket).
+          # Applied inside the package set — not on the leaf application — so
+          # mlx-vlm, which depends on mlx-lm, shares the same patched build.
+          (final: prev: {
+            pythonPackagesExtensions = prev.pythonPackagesExtensions ++ [
+              (pyFinal: pyPrev: {
+                mlx-lm = pyPrev.mlx-lm.overrideAttrs (old: {
+                  patches = (old.patches or [ ]) ++ [ ./patches/mlx-lm-unix-socket.patch ];
+                });
+              })
+            ];
+          })
+        ];
       };
 
       # The interpreter whose package set carries the Metal wheel. Selected by
@@ -98,6 +113,9 @@
             mlxPython.pkgs.torch
             mlxPython.pkgs.torchvision
           ];
+          # Serve on a UNIX domain socket when --host ends in .sock,
+          # mirroring llama-server's convention (see sandbox.sh --socket).
+          patches = (old.patches or [ ]) ++ [ ./patches/mlx-vlm-unix-socket.patch ];
         })
       );
 
@@ -126,14 +144,12 @@
 
         src = pkgs.lib.fileset.toSource {
           root = ./.;
+          # sandbox.sh plus every seatbelt profile — one filter, so a new
+          # profile snippet is picked up here and by installPhase's *.sb glob
+          # without touching this file.
           fileset = pkgs.lib.fileset.unions [
             ./sandbox.sh
-            ./common.sb
-            ./llama-server.sb
-            ./llm.sb
-            ./mlx-server.sb
-            ./opencode.sb
-            ./pi.sb
+            (pkgs.lib.fileset.fileFilter (f: f.hasExt "sb") ./.)
           ];
         };
 
@@ -145,7 +161,7 @@
           runHook preInstall
           libexec=$out/libexec/sandboxed-ai
           install -Dm755 sandbox.sh $libexec/sandbox.sh
-          install -m444 common.sb llama-server.sb llm.sb mlx-server.sb opencode.sb pi.sb $libexec/
+          install -m444 *.sb $libexec/
           makeWrapper $libexec/sandbox.sh $out/bin/sandboxed-ai \
             --set SANDBOXED_AI_PROG sandboxed-ai \
             --set PI_LLAMA_DIR ${pi-llama} \

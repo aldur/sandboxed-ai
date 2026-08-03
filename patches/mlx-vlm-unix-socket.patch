@@ -1,0 +1,17 @@
+--- a/mlx_vlm/server.py	2026-08-03 13:42:58.441045004 +0000
++++ b/mlx_vlm/server.py	2026-08-03 20:59:42.793475764 +0000
+@@ -1455,10 +1455,14 @@
+     os.environ["MAX_KV_SIZE"] = str(args.max_kv_size)
+     os.environ["QUANTIZED_KV_START"] = str(args.quantized_kv_start)
+ 
++    # Serve on a UNIX domain socket when --host ends in .sock, mirroring
++    # llama-server's convention.
++    uds = args.host if args.host.endswith(".sock") else None
+     uvicorn.run(
+         "mlx_vlm.server:app",
+         host=args.host,
+         port=args.port,
++        uds=uds,
+         workers=1,
+         reload=args.reload,
+     )

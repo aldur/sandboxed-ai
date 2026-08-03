@@ -45,6 +45,8 @@ llama-server options:
                         to list available GGUF files.
   --mmproj SPEC         Multimodal projector for vision models, same spec
                         grammar. Quant labels match only mmproj-*.gguf files.
+  --socket PATH         Serve on a UNIX domain socket (path must end in
+                        .sock) instead of TCP.
   All other flags are passed through to llama-server.
 
 mlx-server options:
@@ -52,6 +54,8 @@ mlx-server options:
                         (e.g. mlx-community/Qwen3-8B-4bit). Vision models
                         (config.json with a vision tower) are served with
                         mlx_vlm.server, text models with mlx_lm.server.
+  --socket PATH         Serve on a UNIX domain socket (path must end in
+                        .sock) instead of TCP.
   All other flags are passed through to the server.
 
 opencode options:
@@ -414,32 +418,39 @@ pkg_store_for() {
   esac
 }
 
-# Write server state so cmd_opencode can generate a matching config.
+# Write server state so cmd_opencode/cmd_pi can generate a matching config.
 # $2 is the model id clients must send on the wire; it defaults to the alias
-# (llama-server serves under --alias) but differs for mlx_lm.server, which
-# only maps the literal "default_model" to its --model.
+# (llama-server serves under --alias) but differs for the mlx servers.
+# $3 is the backend (llama|mlx); cmd_pi configures pi differently per
+# backend (llama-cpp plugin vs. a plain OpenAI-compatible provider).
 write_llama_state() {
-  local alias="$1" model_id="${2:-$1}"
+  local alias="$1" model_id="${2:-$1}" backend="${3:-llama}"
   mkdir -p "$STATE_DIR"
   cat >"$STATE_DIR/llama-state" <<EOF
 LLAMA_ALIAS=$alias
 LLAMA_PORT=$PORT
 LLAMA_MODEL_ID=$model_id
+LLAMA_BACKEND=$backend
 EOF
 }
 
 # Generate opencode.json in the given directory from llama-server state.
+# Counterpart of write_llama_state: sets LLAMA_ALIAS, LLAMA_PORT,
+# LLAMA_MODEL_ID and LLAMA_BACKEND, normalizing defaults for records that
+# predate the newer fields. Returns 1 when no state exists.
+load_llama_state() {
+  [[ -f "$STATE_DIR/llama-state" ]] || return 1
+  # shellcheck source=/dev/null
+  source "$STATE_DIR/llama-state"
+  LLAMA_PORT="${LLAMA_PORT:-$PORT}"
+  LLAMA_MODEL_ID="${LLAMA_MODEL_ID:-$LLAMA_ALIAS}"
+  LLAMA_BACKEND="${LLAMA_BACKEND:-llama}"
+}
+
 generate_opencode_config() {
   local target_dir="$1"
-  local state_file="$STATE_DIR/llama-state"
 
-  [[ -f "$state_file" ]] || die "no llama-server state found — start llama first"
-
-  local LLAMA_ALIAS LLAMA_PORT LLAMA_MODEL_ID
-  # shellcheck source=/dev/null
-  source "$state_file"
-  # State written before the model-id field existed defaults to the alias.
-  LLAMA_MODEL_ID="${LLAMA_MODEL_ID:-$LLAMA_ALIAS}"
+  load_llama_state || die "no server state found — start llama-server or mlx-server first"
 
   cat >"$target_dir/opencode.json" <<EOF
 {
@@ -467,9 +478,30 @@ EOF
 }
 
 # ── Subcommands ───────────────────────────────────────────
+# Network personality for the server sandboxes: NET_SB is the profile
+# snippet imported via (import (param "NET_SB")), NET_TARGET the one filter
+# value it consumes — a TCP address for net-tcp.sb, the socket path for
+# net-unix.sb. TCP by default; prepare_socket flips both.
+NET_SB=""
+NET_TARGET=""
+
+# Switch to the UNIX-socket personality for a --socket path: must end in
+# .sock (all three servers key UNIX-socket mode off that suffix on --host),
+# is made absolute, its directory created, and a stale socket file removed.
+# Sets NET_SB/NET_TARGET; the normalized path is NET_TARGET.
+prepare_socket() {
+  local sock="$1"
+  [[ "$sock" == *.sock ]] || die "--socket path must end in .sock: $sock"
+  [[ "$sock" == /* ]] || sock="$PWD/$sock"
+  mkdir -p "${sock%/*}"
+  rm -f "$sock"
+  NET_SB="$SCRIPT_DIR/net-unix.sb"
+  NET_TARGET="$sock"
+}
+
 cmd_llama() {
-  # Extract --model/--mmproj, pass everything else through to llama-server
-  local extra_args=()
+  # Extract --model/--mmproj/--socket, pass everything else through
+  local extra_args=() socket=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
     --model)
@@ -478,6 +510,10 @@ cmd_llama() {
       ;;
     --mmproj)
       MMPROJ="$2"
+      shift 2
+      ;;
+    --socket)
+      socket="$2"
       shift 2
       ;;
     *)
@@ -518,6 +554,12 @@ cmd_llama() {
 
   local -a server_args=(--model "$model_path" --alias "$alias" --port "$PORT")
   [[ -n "$mmproj_path" ]] && server_args+=(--mmproj "$mmproj_path")
+  NET_SB="$SCRIPT_DIR/net-tcp.sb"
+  NET_TARGET="*:$PORT"
+  if [[ -n "$socket" ]]; then
+    prepare_socket "$socket"
+    server_args+=(--host "$NET_TARGET")
+  fi
 
   printf 'Starting sandboxed llama-server:\n'
   info "binary:" "$llama_server"
@@ -535,13 +577,14 @@ cmd_llama() {
   # sandbox-exec errors out on profile parameters that were never passed.
   exec sandbox-exec \
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
+    -D NET_SB="$NET_SB" \
+    -D NET_TARGET="$NET_TARGET" \
     -D PKG_STORE="$(pkg_store_for "$llama_server")" \
     -D LLAMA_SERVER="$llama_server" \
     -D MODEL_DIR="$model_dir" \
     -D MMPROJ_DIR="${mmproj_dir:-$model_dir}" \
     -D CACHE_DIR="$CACHE_DIR" \
     -D TMPDIR="$TMPDIR" \
-    -D NET_ADDR="*:$PORT" \
     -f "$SCRIPT_DIR/llama-server.sb" \
     "$llama_server" "${server_args[@]}" "${extra_args[@]}"
 }
@@ -573,12 +616,16 @@ seed_hf_cache() {
 }
 
 cmd_mlx() {
-  # Extract --model, pass everything else through to mlx_lm.server
-  local extra_args=()
+  # Extract --model/--socket, pass everything else through to the server
+  local extra_args=() socket=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
     --model)
       MODEL="$2"
+      shift 2
+      ;;
+    --socket)
+      socket="$2"
       shift 2
       ;;
     *)
@@ -638,7 +685,7 @@ cmd_mlx() {
   local alias
   alias="$(basename "$model_dir")"
 
-  write_llama_state "$alias" "$model_id"
+  write_llama_state "$alias" "$model_id" mlx
 
   printf 'Starting sandboxed %s:\n' "$(basename "$mlx_server")"
   info "binary:" "$mlx_server"
@@ -658,22 +705,30 @@ cmd_mlx() {
   cd "$CACHE_DIR"
 
   # --host pins mlx_vlm.server to loopback (it defaults to 0.0.0.0;
-  # mlx_lm.server already defaults to 127.0.0.1). Both take --model/--port;
-  # extra args come last so they can override.
+  # mlx_lm.server already defaults to 127.0.0.1); both patched servers adopt
+  # llama-server's convention of a UNIX socket when --host ends in .sock.
+  # Extra args come last so they can override.
+  local -a server_args=(--model "$serve_ref" --port "$PORT")
+  NET_SB="$SCRIPT_DIR/net-tcp.sb"
+  NET_TARGET="*:$PORT"
+  if [[ -n "$socket" ]]; then
+    prepare_socket "$socket"
+    server_args+=(--host "$NET_TARGET")
+  else
+    server_args+=(--host 127.0.0.1)
+  fi
+
   exec sandbox-exec \
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
+    -D NET_SB="$NET_SB" \
+    -D NET_TARGET="$NET_TARGET" \
     -D PKG_STORE="$(pkg_store_for "$mlx_server")" \
     -D CA_FILE="$ca_file" \
     -D MODEL_DIR="$model_dir" \
     -D CACHE_DIR="$CACHE_DIR" \
     -D TMPDIR="$TMPDIR" \
-    -D NET_ADDR="*:$PORT" \
     -f "$SCRIPT_DIR/mlx-server.sb" \
-    "$mlx_server" \
-    --model "$serve_ref" \
-    --host 127.0.0.1 \
-    --port "$PORT" \
-    "${extra_args[@]}"
+    "$mlx_server" "${server_args[@]}" "${extra_args[@]}"
 }
 
 cmd_opencode() {
@@ -731,20 +786,10 @@ cmd_pi() {
     esac
   done
 
-  # The llama-cpp plugin (huggingface/pi-llama) is loaded for the session via
-  # `pi -e <dir>/index.ts`. The Nix wrapper points PI_LLAMA_DIR at the pinned
-  # store copy; outside Nix, set it to a checkout of the repo.
-  local plugin="${PI_LLAMA_DIR:-}/index.ts"
-  [[ -n "${PI_LLAMA_DIR:-}" && -f "$plugin" ]] ||
-    die "pi llama-cpp plugin not found — set PI_LLAMA_DIR to a dir containing index.ts"
-
-  # The plugin discovers the server from LLAMA_BASE_URL. Reuse the port the
-  # llama-server subcommand recorded so it matches a running instance.
+  # Reuse the port the server subcommand recorded so the plugin below
+  # matches a running instance.
   local llama_port="$PORT"
-  if [[ -f "$STATE_DIR/llama-state" ]]; then
-    local LLAMA_ALIAS LLAMA_PORT
-    # shellcheck source=/dev/null
-    source "$STATE_DIR/llama-state"
+  if load_llama_state; then
     llama_port="$LLAMA_PORT"
   fi
 
@@ -754,6 +799,14 @@ cmd_pi() {
   mkdir -p "$pi_home" "$CACHE_DIR" "$TMPDIR"
   export HOME="$pi_home"
   export TMPDIR
+
+  # The llama-cpp plugin (huggingface/pi-llama) is loaded for the session via
+  # `pi -e <dir>/index.ts`. The Nix wrapper points PI_LLAMA_DIR at the pinned
+  # store copy; outside Nix, set it to a checkout of the repo. The plugin
+  # discovers the server from LLAMA_BASE_URL.
+  local plugin="${PI_LLAMA_DIR:-}/index.ts"
+  [[ -n "${PI_LLAMA_DIR:-}" && -f "$plugin" ]] ||
+    die "pi llama-cpp plugin not found — set PI_LLAMA_DIR to a dir containing index.ts"
   export LLAMA_BASE_URL="http://127.0.0.1:$llama_port/v1"
   export LLAMA_API_KEY="${LLAMA_API_KEY:-dummy}"
 

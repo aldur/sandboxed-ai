@@ -1,0 +1,9 @@
+; vim:ft=scheme
+;; UNIX-socket network personality — imported for NET_SB under --socket; no
+;; TCP at all (see net-tcp.sb for the default). NET_TARGET is the socket
+;; path: binding/accepting is filtered by exactly it, and the file grant
+;; covers bind() creating the socket file at that path.
+(allow network-bind network-inbound
+  (literal (param "NET_TARGET")))
+(allow file-read* file-write*
+  (literal (param "NET_TARGET")))
