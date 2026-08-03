@@ -43,12 +43,16 @@ llama-server options:
   --model SPEC          Local path, HF file (org/repo:file.gguf), or
                         HF quant (org/repo:Q4_K_M). Omit the part after ':'
                         to list available GGUF files.
+  --mmproj SPEC         Multimodal projector for vision models, same spec
+                        grammar. Quant labels match only mmproj-*.gguf files.
   All other flags are passed through to llama-server.
 
 mlx-server options:
   --model SPEC          Local model directory or HF repo of an MLX model
-                        (e.g. mlx-community/Qwen3-8B-4bit).
-  All other flags are passed through to mlx_lm.server.
+                        (e.g. mlx-community/Qwen3-8B-4bit). Vision models
+                        (config.json with a vision tower) are served with
+                        mlx_vlm.server, text models with mlx_lm.server.
+  All other flags are passed through to the server.
 
 opencode options:
   -w, --workspace DIR   Workspace directory (default: script dir)
@@ -64,8 +68,10 @@ llm options:
 
 Environment:
   MODEL             Model spec (overridden by --model)
+  MMPROJ            Projector spec (overridden by --mmproj)
   LLAMA_SERVER      Explicit path to llama-server binary (fallback: PATH)
   MLX_SERVER        Explicit path to mlx_lm.server binary (fallback: PATH)
+  MLX_VLM_SERVER    Explicit path to mlx_vlm.server binary (fallback: PATH)
   PI                Explicit path to pi binary (fallback: PATH)
   PI_LLAMA_DIR      Dir holding the pi llama-cpp plugin's index.ts
                     (set by the Nix wrapper; required for the pi command)
@@ -87,10 +93,14 @@ strip_shard() {
 # Choose the GGUF file(s) for a selection within a repo's listing.
 # Prints the chosen rfilename(s), newline-separated, to stdout.
 # On a missing or ambiguous selection, explains on stderr and returns 1.
-#   $1 repo, $2 selection (file.gguf or QUANT), remaining args: GGUF rfilenames
+#   $1 repo, $2 selection (file.gguf or QUANT), $3 kind, remaining: rfilenames
+# Kind scopes *quant-label* matching to one half of a vision repo: 'model'
+# ignores multimodal projectors (mmproj-*.gguf), 'mmproj' considers only
+# them. Explicit filenames bypass the filter — that's how a projector is
+# named directly.
 select_gguf_files() {
-  local repo="$1" sel="$2"
-  shift 2
+  local repo="$1" sel="$2" kind="$3"
+  shift 3
   local -a all=("$@")
   local -a want=()
   local f
@@ -112,10 +122,21 @@ select_gguf_files() {
     }
 
     local sel_lc="${sel,,}"
+    # The label must appear delimited by [-_.] (or an edge) in the basename:
+    # 'F16' matches '…-F16.gguf' and 'mmproj-F16.gguf' but not '…-BF16.gguf',
+    # which a bare substring test would quietly pick once projectors stop
+    # rivalling it into the ambiguity error.
+    local sel_re
+    sel_re="$(printf '%s' "$sel_lc" | sed 's/[^[:alnum:]]/[&]/g')"
     local -a matches=()
     for f in "${all[@]}"; do
-      local base="${f##*/}"
-      [[ "${base,,}" == *"$sel_lc"* ]] && matches+=("$f")
+      local base="${f##*/}" base_lc
+      base_lc="${base,,}"
+      case "$kind" in
+      mmproj) [[ "$base_lc" == mmproj* ]] || continue ;;
+      *) [[ "$base_lc" == mmproj* ]] && continue ;;
+      esac
+      [[ "$base_lc" =~ (^|[-_.])$sel_re([-_.]|$) ]] && matches+=("$f")
     done
     [[ ${#matches[@]} -gt 0 ]] || {
       printf "error: no GGUF matching quant '%s' in %s. Available:\n" "$sel" "$repo" >&2
@@ -265,8 +286,9 @@ resolve_mlx_model() {
 #   org/repo               → lists available GGUF files in the repo
 # Split models: all shards are fetched and the first shard's path is returned;
 # llama-server loads the rest from the same directory.
+# $2 (default 'model') scopes quant matching — see select_gguf_files.
 resolve_model() {
-  local spec="$1"
+  local spec="$1" kind="${2:-model}"
 
   # Local file path
   if [[ -f "$spec" ]]; then
@@ -308,7 +330,7 @@ resolve_model() {
 
   info "resolving:" "$repo:$sel" >&2
   local files_out
-  files_out="$(select_gguf_files "$repo" "$sel" "${all[@]}")" || exit 1
+  files_out="$(select_gguf_files "$repo" "$sel" "$kind" "${all[@]}")" || exit 1
 
   local -a want=()
   while IFS= read -r line; do [[ -n "$line" ]] && want+=("$line"); done <<<"$files_out"
@@ -412,12 +434,16 @@ EOF
 
 # ── Subcommands ───────────────────────────────────────────
 cmd_llama() {
-  # Extract --model, pass everything else through to llama-server
+  # Extract --model/--mmproj, pass everything else through to llama-server
   local extra_args=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
     --model)
       MODEL="$2"
+      shift 2
+      ;;
+    --mmproj)
+      MMPROJ="$2"
       shift 2
       ;;
     *)
@@ -432,6 +458,17 @@ cmd_llama() {
   local model_path
   model_path="$(resolve_model "$MODEL")"
 
+  # A vision model is served from two GGUFs: the model plus a multimodal
+  # projector (mmproj-*.gguf). llama-server only auto-fetches the projector
+  # on its own `-hf` path, never for a local --model, so it must be resolved
+  # and passed explicitly here. Quant labels resolve against projector files
+  # only (see select_gguf_files); explicit filenames also work.
+  local mmproj_path="" mmproj_dir=""
+  if [[ -n "${MMPROJ:-}" ]]; then
+    mmproj_path="$(resolve_model "$MMPROJ" mmproj)"
+    mmproj_dir="$(dirname "$mmproj_path")"
+  fi
+
   local llama_server
   llama_server="$(resolve_binary "${LLAMA_SERVER:-}" "llama-server")"
 
@@ -445,9 +482,13 @@ cmd_llama() {
   export TMPDIR
   write_llama_state "$alias"
 
+  local -a server_args=(--model "$model_path" --alias "$alias" --port "$PORT")
+  [[ -n "$mmproj_path" ]] && server_args+=(--mmproj "$mmproj_path")
+
   printf 'Starting sandboxed llama-server:\n'
   info "binary:" "$llama_server"
   info "model:" "$model_path"
+  [[ -n "$mmproj_path" ]] && info "mmproj:" "$mmproj_path"
   info "alias:" "$alias"
   info "port:" "$PORT"
   info "extra:" "${extra_args[*]:-none}"
@@ -456,20 +497,19 @@ cmd_llama() {
   # cd to an allowed dir so llama-server's getcwd() succeeds inside the sandbox
   cd "$CACHE_DIR"
 
+  # MMPROJ_DIR falls back to MODEL_DIR when no projector is given:
+  # sandbox-exec errors out on profile parameters that were never passed.
   exec sandbox-exec \
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
     -D PKG_STORE="$(pkg_store_for "$llama_server")" \
     -D LLAMA_SERVER="$llama_server" \
     -D MODEL_DIR="$model_dir" \
+    -D MMPROJ_DIR="${mmproj_dir:-$model_dir}" \
     -D CACHE_DIR="$CACHE_DIR" \
     -D TMPDIR="$TMPDIR" \
     -D NET_ADDR="*:$PORT" \
     -f "$SCRIPT_DIR/llama-server.sb" \
-    "$llama_server" \
-    --model "$model_path" \
-    --alias "$alias" \
-    --port "$PORT" \
-    "${extra_args[@]}"
+    "$llama_server" "${server_args[@]}" "${extra_args[@]}"
 }
 
 cmd_mlx() {
@@ -493,8 +533,23 @@ cmd_mlx() {
   local model_dir
   model_dir="$(resolve_mlx_model "$MODEL")"
 
-  local mlx_server
-  mlx_server="$(resolve_binary "${MLX_SERVER:-}" "mlx_lm.server")"
+  # A config.json carrying a vision tower marks a VLM. mlx_lm.server is
+  # text-only, so those go to mlx-vlm's OpenAI-compatible server instead.
+  # Unlike llama.cpp there is no separate projector file: the full-repo
+  # download above already includes the vision weights.
+  local mlx_server model_id
+  if grep -q '"vision_config"' "$model_dir/config.json"; then
+    mlx_server="$(resolve_binary "${MLX_VLM_SERVER:-}" "mlx_vlm.server")"
+    # mlx_vlm.server loads whatever path the request's `model` field names
+    # (--model merely pre-warms the cache), so clients must put the local
+    # model directory on the wire.
+    model_id="$model_dir"
+  else
+    mlx_server="$(resolve_binary "${MLX_SERVER:-}" "mlx_lm.server")"
+    # mlx_lm.server only maps the literal "default_model" to its --model;
+    # any other value is treated as a path/repo to load (impossible offline).
+    model_id="default_model"
+  fi
 
   local alias
   alias="$(basename "$model_dir")"
@@ -509,11 +564,9 @@ cmd_mlx() {
   # keep huggingface_hub from even trying.
   export HF_HUB_OFFLINE=1
 
-  # mlx_lm.server only maps the request model "default_model" to its --model;
-  # any other value is treated as a path/repo to load (impossible offline).
-  write_llama_state "$alias" "default_model"
+  write_llama_state "$alias" "$model_id"
 
-  printf 'Starting sandboxed mlx_lm.server:\n'
+  printf 'Starting sandboxed %s:\n' "$(basename "$mlx_server")"
   info "binary:" "$mlx_server"
   info "model:" "$model_dir"
   info "alias:" "$alias"
@@ -524,6 +577,9 @@ cmd_mlx() {
   # cd to an allowed dir so the server's getcwd() succeeds inside the sandbox
   cd "$CACHE_DIR"
 
+  # --host pins mlx_vlm.server to loopback (it defaults to 0.0.0.0;
+  # mlx_lm.server already defaults to 127.0.0.1). Both take --model/--port;
+  # extra args come last so they can override.
   exec sandbox-exec \
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
     -D PKG_STORE="$(pkg_store_for "$mlx_server")" \
@@ -534,6 +590,7 @@ cmd_mlx() {
     -f "$SCRIPT_DIR/mlx-server.sb" \
     "$mlx_server" \
     --model "$model_dir" \
+    --host 127.0.0.1 \
     --port "$PORT" \
     "${extra_args[@]}"
 }

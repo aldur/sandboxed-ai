@@ -5,8 +5,9 @@
     dotfiles = {
       url = "github:aldur/dotfiles";
       inputs = {
+        # We rely on `nixpkgs-darwin` to fetch the mlx wheel and its hash.
+        # We do not override it on purpose.
         nixpkgs.follows = "nixpkgs";
-        nixpkgs-darwin.follows = "nixpkgs";
         nixpkgs-unstable.follows = "nixpkgs";
         agenix.follows = "";
         clipshare.follows = "";
@@ -79,10 +80,19 @@
         overlays = [ dotfiles.overlays.mlx ];
       };
 
-      # `mlx_lm.server` (and the rest of the mlx_lm.* CLI) on PATH. The
-      # overlay's wheel pins CPython 3.13, so build on python313 rather than
-      # this nixpkgs' default python3 (3.14).
-      mlx-lm = pkgsMlx.python313.pkgs.toPythonApplication pkgsMlx.python313.pkgs.mlx-lm;
+      # The interpreter whose package set carries the Metal wheel. Selected by
+      # the overlay (`mlx-python`) to match the CPython the wheel hash is
+      # pinned for — not hardcoded here, so a wheel/Python bump in dotfiles
+      # carries over with the next flake update.
+      mlxPython = pkgsMlx.mlx-python;
+
+      # `mlx_lm.server` (and the rest of the mlx_lm.* CLI) on PATH.
+      mlx-lm = mlxPython.pkgs.toPythonApplication mlxPython.pkgs.mlx-lm;
+
+      # `mlx_vlm.server`: OpenAI-compatible server for MLX *vision* models. Same
+      # Metal-enabled package set; sandbox.sh picks it automatically for models
+      # whose config carries a vision tower.
+      mlx-vlm = mlxPython.pkgs.toPythonApplication mlxPython.pkgs.mlx-vlm;
 
       # `pi` bundled with the pinned huggingface/pi-llama llama.cpp plugin
       # (auto-loaded via `pi -e <store>/index.ts` — no `pi install`, no
@@ -142,6 +152,7 @@
                 llama-cpp
                 llm
                 mlx-lm
+                mlx-vlm
                 pkgs.opencode
                 pkgs.pi-coding-agent
               ]
@@ -158,6 +169,7 @@
           llama-cpp
           llm
           mlx-lm
+          mlx-vlm
           pi
           pi-llama
           sandboxed-ai
@@ -170,6 +182,7 @@
           llama-cpp
           llm
           mlx-lm
+          mlx-vlm
           pkgs.opencode
           pkgs.pi-coding-agent
           sandboxed-ai

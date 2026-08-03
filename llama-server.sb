@@ -51,9 +51,12 @@
   (subpath "/Library/GPUBundles")
   (subpath "/System/Library/GPUBundles"))
 
-;; Model weights (read-only)
+;; Model weights + multimodal projector (read-only). MMPROJ_DIR falls back
+;; to MODEL_DIR when no projector is in play — sandbox-exec errors out on
+;; parameters referenced but not passed.
 (allow file-read*
-  (subpath (param "MODEL_DIR")))
+  (subpath (param "MODEL_DIR"))
+  (subpath (param "MMPROJ_DIR")))
 
 ;; Metal shader / PSO cache + local temp
 (allow file-read* file-write* file-lock

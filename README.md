@@ -22,6 +22,8 @@ See [this blog post][0] for background, more info, and Qwen3.5 test-runs.
 
 The [sandbox.sh](./sandbox.sh) script does the heavy lifting.
 
+### `llama.cpp`
+
 ```bash
 # Install llama.cpp, or use `nix develop`
 brew install llama.cpp
@@ -31,14 +33,16 @@ brew install llama.cpp
 
 # Binds to localhost:8080
 # Additional arguments go to `llama-server`
+# --mmproj automatically handles the download of multimodal projector
 ```
 
 The sandbox is default-deny and only allows access to the GPU and the models.
 Network access is disabled for `llama-server`. Models are downloaded through
 `curl` (outside of the sandbox).
 
-The same works for [MLX][5] models through `mlx_lm.server`, which exposes the
-same OpenAI-compatible API on the same port:
+### `mlx-lm`
+
+[MLX][5]'s' `mlx_lm.server` exposes the an OpenAI-compatible API as well
 
 ```bash
 # Install mlx_lm or use `nix develop`
@@ -46,7 +50,11 @@ brew install mlx-lm
 
 # Sandbox it and run it
 ./sandbox.sh mlx-server --model mlx-community/Qwen3-8B-4bit
+
+# Vision models are automatically detected and served with `mlx_vlm.server`.
 ```
+
+### `pi` and `opencode`
 
 ```bash
 # Install opencode or use `nix develop`
@@ -83,12 +91,16 @@ llama-server options:
   --model SPEC          Local path, HF file (org/repo:file.gguf), or
                         HF quant (org/repo:Q4_K_M). Omit the part after ':'
                         to list available GGUF files.
+  --mmproj SPEC         Multimodal projector for vision models, same spec
+                        grammar. Quant labels match only mmproj-*.gguf files.
   All other flags are passed through to llama-server.
 
 mlx-server options:
   --model SPEC          Local model directory or HF repo of an MLX model
-                        (e.g. mlx-community/Qwen3-8B-4bit).
-  All other flags are passed through to mlx_lm.server.
+                        (e.g. mlx-community/Qwen3-8B-4bit). Vision models
+                        (config.json with a vision tower) are served with
+                        mlx_vlm.server, text models with mlx_lm.server.
+  All other flags are passed through to the server.
 
 opencode options:
   -w, --workspace DIR   Workspace directory (default: script dir)
@@ -104,8 +116,10 @@ llm options:
 
 Environment:
   MODEL             Model spec (overridden by --model)
+  MMPROJ            Projector spec (overridden by --mmproj)
   LLAMA_SERVER      Explicit path to llama-server binary (fallback: PATH)
   MLX_SERVER        Explicit path to mlx_lm.server binary (fallback: PATH)
+  MLX_VLM_SERVER    Explicit path to mlx_vlm.server binary (fallback: PATH)
   PI                Explicit path to pi binary (fallback: PATH)
   PI_LLAMA_DIR      Dir holding the pi llama-cpp plugin's index.ts
                     (set by the Nix wrapper; required for the pi command)
