@@ -546,6 +546,32 @@ cmd_llama() {
     "$llama_server" "${server_args[@]}" "${extra_args[@]}"
 }
 
+# Seed an HF hub cache entry for a side-loaded repo download. The mlx
+# servers list (/v1/models) and resolve models through huggingface_hub's
+# cache, so a symlinked cache entry makes them treat the download as if it
+# came from the hub — offline: clients can auto-discover the model and
+# address it by its repo id. Layout:
+#   hub/models--{org}--{name}/refs/main           → pseudo revision
+#   hub/models--{org}--{name}/snapshots/<rev>/<f> → models/<repo>/<f>
+seed_hf_cache() {
+  local repo="$1" model_dir="$2"
+  local entry="$HF_HOME/hub/models--${repo//\//--}"
+  # Content-addressing is irrelevant locally, but the ref must name an
+  # existing snapshot directory and look like a commit hash.
+  local rev="0000000000000000000000000000000000000000"
+
+  rm -rf "$entry"
+  mkdir -p "$entry/refs" "$entry/snapshots/$rev"
+  printf '%s' "$rev" >"$entry/refs/main"
+
+  local f rel
+  while IFS= read -r f; do
+    rel="${f#"$model_dir/"}"
+    mkdir -p "$entry/snapshots/$rev/$(dirname "$rel")"
+    ln -s "$f" "$entry/snapshots/$rev/$rel"
+  done < <(find "$model_dir" -type f ! -name '.*')
+}
+
 cmd_mlx() {
   # Extract --model, pass everything else through to mlx_lm.server
   local extra_args=()
@@ -567,6 +593,28 @@ cmd_mlx() {
   local model_dir
   model_dir="$(resolve_mlx_model "$MODEL")"
 
+  mkdir -p "$CACHE_DIR" "$TMPDIR"
+  export TMPDIR
+  # Root ~-relative state (HF hub cache scans etc.) inside the writable cache.
+  # The hub/ subdir must exist even when empty: /v1/models scans it and 500s
+  # (CacheNotFound) when it's missing.
+  export HOME="$CACHE_DIR/mlx-home"
+  export HF_HOME="$HOME/huggingface"
+  mkdir -p "$HF_HOME/hub"
+  # The model is fully local and the sandbox denies outbound network anyway;
+  # keep huggingface_hub from even trying.
+  export HF_HUB_OFFLINE=1
+
+  # Serve by repo id when the spec is an HF repo: the seeded cache entry
+  # lets both servers resolve that id offline and list it on /v1/models, so
+  # clients can auto-discover the model and address it by name. A local
+  # directory spec has no repo id and is served by path instead.
+  local serve_ref="$model_dir"
+  if [[ ! -d "$MODEL" ]]; then
+    seed_hf_cache "$MODEL" "$model_dir"
+    serve_ref="$MODEL"
+  fi
+
   # A config.json carrying a vision tower marks a VLM. mlx_lm.server is
   # text-only, so those go to mlx-vlm's OpenAI-compatible server instead.
   # Unlike llama.cpp there is no separate projector file: the full-repo
@@ -574,35 +622,27 @@ cmd_mlx() {
   local mlx_server model_id
   if grep -q '"vision_config"' "$model_dir/config.json"; then
     mlx_server="$(resolve_binary "${MLX_VLM_SERVER:-}" "mlx_vlm.server")"
-    # mlx_vlm.server loads whatever path the request's `model` field names
-    # (--model merely pre-warms the cache), so clients must put the local
-    # model directory on the wire.
-    model_id="$model_dir"
+    # mlx_vlm.server loads whatever the request's `model` field names and
+    # keys its cache on that string (--model merely pre-warms it), so the
+    # wire id must equal what the server was started with.
+    model_id="$serve_ref"
   else
     mlx_server="$(resolve_binary "${MLX_SERVER:-}" "mlx_lm.server")"
-    # mlx_lm.server only maps the literal "default_model" to its --model;
-    # any other value is treated as a path/repo to load (impossible offline).
-    model_id="default_model"
+    # mlx_lm.server maps the literal "default_model" to its --model; with a
+    # seeded cache the repo id resolves too — to the same loaded instance —
+    # so prefer it on the wire. A path-served model keeps "default_model".
+    model_id="$serve_ref"
+    [[ "$serve_ref" == "$model_dir" ]] && model_id="default_model"
   fi
 
   local alias
   alias="$(basename "$model_dir")"
 
-  mkdir -p "$CACHE_DIR" "$TMPDIR"
-  export TMPDIR
-  # Root ~-relative state (HF hub cache scans etc.) inside the writable cache.
-  export HOME="$CACHE_DIR/mlx-home"
-  export HF_HOME="$HOME/huggingface"
-  mkdir -p "$HF_HOME"
-  # The model is fully local and the sandbox denies outbound network anyway;
-  # keep huggingface_hub from even trying.
-  export HF_HUB_OFFLINE=1
-
   write_llama_state "$alias" "$model_id"
 
   printf 'Starting sandboxed %s:\n' "$(basename "$mlx_server")"
   info "binary:" "$mlx_server"
-  info "model:" "$model_dir"
+  info "model:" "$serve_ref"
   info "alias:" "$alias"
   info "port:" "$PORT"
   info "extra:" "${extra_args[*]:-none}"
@@ -623,7 +663,7 @@ cmd_mlx() {
     -D NET_ADDR="*:$PORT" \
     -f "$SCRIPT_DIR/mlx-server.sb" \
     "$mlx_server" \
-    --model "$model_dir" \
+    --model "$serve_ref" \
     --host 127.0.0.1 \
     --port "$PORT" \
     "${extra_args[@]}"
