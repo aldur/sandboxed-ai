@@ -651,6 +651,7 @@ cmd_mlx() {
   local ca_file="/dev/null"
   if [[ -n "${NIX_SSL_CERT_FILE:-}" && "$NIX_SSL_CERT_FILE" != "/no-cert-file.crt" ]]; then
     ca_file="$(realpath "$NIX_SSL_CERT_FILE" 2>/dev/null || echo /dev/null)"
+    [[ "$ca_file" != "/dev/null" ]] && export NIX_SSL_CERT_FILE="$ca_file"
   fi
 
   # cd to an allowed dir so the server's getcwd() succeeds inside the sandbox
