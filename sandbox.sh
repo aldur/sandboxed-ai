@@ -252,16 +252,39 @@ resolve_mlx_model() {
   [[ "$spec" == */* && "$spec" != /* ]] ||
     die "model not found: $spec (use a local directory or org/repo)"
 
+  local target_dir="$MODELS_DIR/$spec"
+
+  # A finished earlier download is a complete snapshot of the repo (the
+  # marker is written only once every file has landed), so resolve it
+  # locally — no HF round-trip, works offline. Delete the marker (or the
+  # directory) to re-sync with upstream.
+  if [[ -f "$target_dir/.download-complete" ]]; then
+    info "cached:" "$spec" >&2
+    printf '%s' "$target_dir"
+    return
+  fi
+
   # All files in the repo (rfilenames, may include subfolders).
   local listing
   listing="$(curl -sf "https://huggingface.co/api/models/$spec" |
     grep -o '"rfilename":"[^"]*"' |
     sed 's/"rfilename":"//;s/"//')" || listing=""
-  [[ -n "$listing" ]] || die "no files found on HF for $spec"
+
+  # Offline fallback for a download that predates the marker: a local copy
+  # with a config.json is plausibly complete — use it (the server fails
+  # loudly on missing weights), but don't mark it: the next online run
+  # verifies against the real listing first.
+  if [[ -z "$listing" ]]; then
+    if [[ -f "$target_dir/config.json" ]]; then
+      info "offline:" "cannot list $spec on HF; using local copy" >&2
+      printf '%s' "$target_dir"
+      return
+    fi
+    die "no files found on HF for $spec"
+  fi
 
   info "resolving:" "$spec" >&2
 
-  local target_dir="$MODELS_DIR/$spec"
   local f
   while IFS= read -r f; do
     [[ -n "$f" ]] || continue
@@ -274,6 +297,8 @@ resolve_mlx_model() {
 
   [[ -f "$target_dir/config.json" ]] ||
     die "not an MLX model repo (no config.json): $spec"
+
+  touch "$target_dir/.download-complete"
 
   printf '%s' "$target_dir"
 }
@@ -314,6 +339,15 @@ resolve_model() {
   listing="$(curl -sf "https://huggingface.co/api/models/$repo" |
     grep -o '"rfilename":"[^"]*\.gguf"' |
     sed 's/"rfilename":"//;s/"//')" || listing=""
+
+  # Offline fallback: resolve against the GGUFs already downloaded for this
+  # repo, so a quant spec keeps working without network once fetched.
+  # (hf_download then finds them cached; a quant that only exists upstream
+  # still dies at download, as it must.)
+  if [[ -z "$listing" && -d "$MODELS_DIR/$repo" ]]; then
+    listing="$(cd "$MODELS_DIR/$repo" && find . -name '*.gguf' | sed 's|^\./||')"
+    [[ -n "$listing" ]] && info "offline:" "resolving against local files for $repo" >&2
+  fi
 
   # Bare repo (no selection): list available files and exit.
   if [[ -z "$sel" ]]; then
