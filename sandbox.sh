@@ -296,7 +296,8 @@ resolve_ca_file() {
 # Default is TCP on $PORT (net-tcp.sb); a --socket path selects net-unix.sb
 # with the socket path as the filter — each personality grants nothing of
 # the other's surface. The path must end in .sock (all three servers key
-# UNIX-socket mode off that suffix on --host) and is normalized here.
+# UNIX-socket mode off that suffix on --host) and is normalized here, to
+# absolute with symlinks resolved (seatbelt matches resolved paths).
 # True when some process holds $1 open, i.e. it is a live socket rather
 # than a leftover. Conservative: with no lsof, nothing is reported in use.
 socket_in_use() {
@@ -322,6 +323,13 @@ select_net() {
   local dir="${sock%/*}"
   [[ -n "$dir" ]] || dir=/
   mkdir -m 700 -p "$dir" # the profile grants only the socket path itself
+
+  # Seatbelt matches resolved paths and the profile filter is a literal, so
+  # a symlinked component (macOS /tmp -> /private/tmp) would make bind()
+  # miss the grant. Resolve the directory (it exists now) and keep --host
+  # and the profile param agreeing on the physical path.
+  dir="$(realpath "$dir" 2>/dev/null || (cd "$dir" && pwd -P))"
+  sock="$dir/${sock##*/}"
 
   # A stale socket file would make bind() fail, so it has to go — but this
   # runs unsandboxed with full user privileges on a path the caller typed,
