@@ -350,6 +350,24 @@ else
   skip "startup: an unset allowlisted variable does not abort the run" "mlx_lm.server not on PATH"
 fi
 
+# The binary that enforces the sandbox must not come from PATH: a writable
+# entry ahead of /usr/bin would otherwise run the tool unsandboxed, under a
+# banner claiming otherwise. Plant a stub and check it is never reached.
+mkdir -p "$SCRATCH/fakebin"
+printf '#!/bin/sh\ntouch "%s/stub-ran"\n' "$SCRATCH" >"$SCRATCH/fakebin/sandbox-exec"
+chmod +x "$SCRATCH/fakebin/sandbox-exec"
+rm -f "$SCRATCH/stub-ran"
+if command -v llm >/dev/null; then
+  PATH="$SCRATCH/fakebin:$PATH" "$SANDBOX" llm --version >"$WORK/hijack.log" 2>&1
+  if [[ -e "$SCRATCH/stub-ran" ]]; then
+    fail "startup: sandbox-exec is not taken from PATH" "$WORK/hijack.log"
+  else
+    ok "startup: sandbox-exec is not taken from PATH"
+  fi
+else
+  skip "startup: sandbox-exec is not taken from PATH" "llm not on PATH"
+fi
+
 # A repo with no GGUF listing must reach its error message, not exit blank.
 "$SANDBOX" llama-server --model no-such-org/no-such-repo-xyz:Q4_K_M >"$WORK/no-listing.log" 2>&1
 if grep -q 'cannot resolve quant' "$WORK/no-listing.log"; then

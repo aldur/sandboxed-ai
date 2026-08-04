@@ -52,7 +52,16 @@ TMPDIR="$STATE_DIR/tmp"
 # relocates them. Give it a real path, not a symlink: seatbelt matches
 # resolved paths, so a link would not match the granted MODEL_DIR.
 MODELS_DIR="${SANDBOXED_AI_MODELS:-$STATE_DIR/models}"
-readonly SCRIPT_DIR PROFILES_DIR PROG PORT STATE_DIR CACHE_DIR MODELS_DIR
+
+# The binary that enforces every profile in this repo, by absolute path.
+# Never resolved through PATH: PATH is inherited from the caller (and passed
+# on through the env allowlist), so a writable entry ahead of /usr/bin —
+# ~/.local/bin, a stray ./node_modules/.bin — would let a stub take its
+# place and run the tool with no sandbox at all, under a banner that says
+# "Starting sandboxed …". The model binaries go through resolve_binary for
+# the same reason; this one cannot afford even that much indirection.
+SANDBOX_EXEC=/usr/bin/sandbox-exec
+readonly SCRIPT_DIR PROFILES_DIR PROG PORT STATE_DIR CACHE_DIR MODELS_DIR SANDBOX_EXEC
 
 # ── Output & usage ────────────────────────────────────────
 die() {
@@ -61,6 +70,9 @@ die() {
 }
 # Prints to stdout; callers whose stdout is captured redirect to stderr.
 info() { printf '  %-14s %s\n' "$1" "$2"; }
+
+[[ -x "$SANDBOX_EXEC" ]] ||
+  die "$SANDBOX_EXEC not found or not executable — seatbelt is required"
 
 # Read the non-empty lines of $1 into the array named by $2.
 split_lines() {
@@ -829,7 +841,7 @@ cmd_llama() {
   # sandbox-exec errors out on profile parameters that were never passed.
   local -a sbx_env
   sandbox_env sbx_env HOME TMPDIR
-  exec "${sbx_env[@]}" sandbox-exec \
+  exec "${sbx_env[@]}" "$SANDBOX_EXEC" \
     -D COMMON_SB="$PROFILES_DIR/common.sb" \
     -D SERVER_SB="$PROFILES_DIR/server.sb" \
     -D NET_SB="$NET_SB" \
@@ -952,7 +964,7 @@ cmd_mlx() {
   # resolve_ca_file); the profile grants read on exactly that path.
   local -a sbx_env
   sandbox_env sbx_env HOME TMPDIR HF_HOME HF_HUB_OFFLINE PYTHONNOUSERSITE NIX_SSL_CERT_FILE
-  exec "${sbx_env[@]}" sandbox-exec \
+  exec "${sbx_env[@]}" "$SANDBOX_EXEC" \
     -D COMMON_SB="$PROFILES_DIR/common.sb" \
     -D SERVER_SB="$PROFILES_DIR/server.sb" \
     -D NET_SB="$NET_SB" \
@@ -1022,7 +1034,7 @@ cmd_pi() {
 
   local -a sbx_env
   sandbox_env sbx_env HOME TMPDIR LLAMA_BASE_URL LLAMA_API_KEY PI_OFFLINE
-  exec "${sbx_env[@]}" sandbox-exec \
+  exec "${sbx_env[@]}" "$SANDBOX_EXEC" \
     -D COMMON_SB="$PROFILES_DIR/common.sb" \
     -D CLIENT_SB="$PROFILES_DIR/client.sb" \
     -D PKG_STORE="$pkg_store" \
@@ -1061,7 +1073,7 @@ cmd_llm() {
 
   local -a sbx_env
   sandbox_env sbx_env HOME TMPDIR LLM_USER_PATH OPENAI_API_KEY
-  exec "${sbx_env[@]}" sandbox-exec \
+  exec "${sbx_env[@]}" "$SANDBOX_EXEC" \
     -D COMMON_SB="$PROFILES_DIR/common.sb" \
     -D CLIENT_SB="$PROFILES_DIR/client.sb" \
     -D PKG_STORE="$pkg_store" \
