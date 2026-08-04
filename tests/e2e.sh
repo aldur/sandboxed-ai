@@ -513,6 +513,17 @@ if [[ -n "$MLX_SERVER" ]]; then
   start_server mlx-tcp mlx-server --model "$TEST_MLX_MODEL"
   if wait_http "http://127.0.0.1:$PORT/v1/models" 180; then
     ok "mlx-server (tcp) becomes healthy"
+    # /v1/models drives client auto-discovery, and the sandbox grants
+    # MODEL_DIR for the served model only. Anything else listed here — an
+    # entry left in the HF cache by an earlier run, say — is a model the
+    # server will be denied when a client asks for it.
+    listed="$(curl -s --max-time 5 "http://127.0.0.1:$PORT/v1/models" |
+      "$PY" -c 'import sys,json; print(" ".join(m["id"] for m in json.load(sys.stdin)["data"]))' 2>/dev/null)"
+    if [[ "$listed" == "$TEST_MLX_MODEL" ]]; then
+      ok "mlx-server advertises only the model it is serving"
+    else
+      fail "mlx-server advertises only the model it is serving (listed: ${listed:-none})"
+    fi
     if chat_ok "http://127.0.0.1:$PORT/v1/chat/completions" "$WORK/mlx-tcp-chat.json"; then
       ok "mlx-server (tcp) serves a completion"
     else

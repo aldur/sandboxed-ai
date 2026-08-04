@@ -1020,6 +1020,13 @@ cmd_mlx() {
   # and 500s (CacheNotFound) when it's missing.
   export HOME="$CACHE_DIR/mlx-home"
   export HF_HOME="$HOME/huggingface"
+  # Emptied, not just topped up: /v1/models lists everything in this cache,
+  # and the sandbox grants MODEL_DIR for the served model only. Entries left
+  # by earlier runs would be advertised to clients, which then ask for a
+  # model the server is not allowed to open — an "Operation not permitted"
+  # on a path the user never mentioned. Only what is seeded below is
+  # servable, so only that may be listed.
+  rm -rf "$HF_HOME/hub"
   mkdir -p "$HF_HOME/hub"
   # The model is fully local and the sandbox denies outbound network anyway;
   # keep huggingface_hub from even trying.
