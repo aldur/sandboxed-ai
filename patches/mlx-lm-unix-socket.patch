@@ -37,3 +37,15 @@
      httpd = server_class(
          server_address,
          lambda *args, **kwargs: handler_class(
+@@ -1724,7 +1744,10 @@
+         "mlx_lm.server is not recommended for production as "
+         "it only implements basic security checks."
+     )
+-    logging.info(f"Starting httpd at {host} on port {port}...")
++    if host.endswith(".sock"):
++        logging.info(f"Starting httpd at UNIX socket {host}...")
++    else:
++        logging.info(f"Starting httpd at {host} on port {port}...")
+     try:
+         httpd.serve_forever()
+     except KeyboardInterrupt:

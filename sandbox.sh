@@ -994,7 +994,11 @@ cmd_llama() {
     info "model:" "$model_path"
     [[ -n "$mmproj_path" ]] && info "mmproj:" "$mmproj_path"
     info "alias:" "$model_alias"
-    info "port:" "$PORT"
+    if [[ -n "$socket" ]]; then
+      info "socket:" "$NET_TARGET"
+    else
+      info "port:" "$PORT"
+    fi
     info "extra:" "${extra_args[*]:-none}"
     printf '\n'
   fi
@@ -1146,7 +1150,11 @@ cmd_mlx() {
     info "binary:" "$mlx_server"
     info "model:" "$serve_ref"
     info "model id:" "$model_id"
-    info "port:" "$PORT"
+    if [[ -n "$socket" ]]; then
+      info "socket:" "$NET_TARGET"
+    else
+      info "port:" "$PORT"
+    fi
     info "extra:" "${extra_args[*]:-none}"
     printf '\n'
 
