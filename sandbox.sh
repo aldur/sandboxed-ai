@@ -649,6 +649,50 @@ resolve_model() {
   [[ -z "$sel" ]] || safe_rel_path "$sel" ||
     die "invalid file selection: $sel"
 
+  # Local-first, mirroring resolve_mlx_model's .download-complete marker: a
+  # selection that resolves entirely to files hf_download verified on
+  # arrival (their digest sidecars exist) costs no HF round-trip and works
+  # offline. A split set counts only when every shard is present — the
+  # -NNNNN-of-NNNNN suffix says how many that is. Anything short of that
+  # falls through to remote resolution below. Delete the sidecars (or the
+  # files) to re-sync with upstream.
+  if [[ -n "$sel" && -d "$MODELS_DIR/$repo" ]]; then
+    local local_listing
+    local_listing="$(cd "$MODELS_DIR/$repo" && find . -name '*.gguf' | sed 's|^\./||')"
+    local -a lall=() lwant=()
+    local lout lf lfirst="" complete=1
+    split_lines "$local_listing" lall
+    if [[ ${#lall[@]} -gt 0 ]] &&
+      lout="$(select_gguf_files "$repo" "$sel" "$kind" "${lall[@]}" 2>/dev/null)"; then
+      split_lines "$lout" lwant
+      for lf in "${lwant[@]}"; do
+        safe_rel_path "$lf" || {
+          complete=0
+          break
+        }
+        [[ -f "$MODELS_DIR/$repo/$lf" && -s "$(digest_sidecar "$MODELS_DIR/$repo/$lf")" ]] || {
+          complete=0
+          break
+        }
+        if [[ "$lf" =~ -[0-9]+-of-0*([0-9]+)\.gguf$ ]]; then
+          [[ ${#lwant[@]} -eq ${BASH_REMATCH[1]} ]] || {
+            complete=0
+            break
+          }
+        fi
+        [[ -n "$lfirst" ]] || lfirst="$MODELS_DIR/$repo/$lf"
+      done
+      if [[ ${#lwant[@]} -gt 0 && "$complete" == 1 ]]; then
+        [[ ${#lwant[@]} -gt 1 ]] && info "split:" "${#lwant[@]} shards" >&2
+        for lf in "${lwant[@]}"; do
+          info "cached:" "$lf" >&2
+        done
+        printf '%s' "$lfirst"
+        return
+      fi
+    fi
+  fi
+
   # GGUF files available in the repo (may include subfolders).
   local listing
   listing="$(hf_listing "$repo" '\.gguf')" || listing=""

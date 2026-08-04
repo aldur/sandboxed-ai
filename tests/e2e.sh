@@ -531,6 +531,30 @@ else
 fi
 stop_server
 
+# ── llama-server: cached resolution is offline ────────────
+# Launching a model that is already downloaded should not touch the
+# network at all. The fake curl on PATH fails every call and logs it, so a
+# resolver that still phones home shows up as entries in the log. The
+# "offline:" check matters too: that is the old network-error fallback,
+# which would also pass the health check — but it means the network was
+# tried and failed, not skipped.
+NETBLOCK="$WORK/netblock"
+mkdir -p "$NETBLOCK"
+printf '#!/bin/sh\necho "$*" >> "%s/curl-calls"\nexit 6\n' "$NETBLOCK" >"$NETBLOCK/curl"
+chmod +x "$NETBLOCK/curl"
+PATH="$NETBLOCK:$PATH" start_server llama-cached llama-server --model "$TEST_GGUF_MODEL"
+if wait_http "http://127.0.0.1:$PORT/health" 180; then
+  ok "llama-server (cached) becomes healthy with network blocked"
+else
+  fail "llama-server (cached) becomes healthy with network blocked" "$WORK/llama-cached.log"
+fi
+if [[ ! -s "$NETBLOCK/curl-calls" ]] && grep -q 'cached:' "$WORK/llama-cached.log" &&
+  ! grep -q 'offline:' "$WORK/llama-cached.log"; then
+  ok "llama-server (cached) resolves without HF round-trips"
+else
+  fail "llama-server (cached) resolves without HF round-trips" "$WORK/llama-cached.log"
+fi
+stop_server
 # ── mlx-server: TCP ───────────────────────────────────────
 if [[ -n "$MLX_SERVER" ]]; then
   start_server mlx-tcp mlx-server --model "$TEST_MLX_MODEL"
