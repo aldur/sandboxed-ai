@@ -265,6 +265,17 @@ if wait_http "--unix-socket $SOCK http://localhost/health" 180; then
   else
     fail "llama-server (unix socket) serves a completion" "$WORK/llama-sock-chat.json"
   fi
+  # The servers authenticate nobody, and on macOS connecting to a UNIX
+  # socket needs write permission on it, so any group/other bit is an open
+  # door. sandbox.sh sets umask 077 for socket mode; mlx-vlm additionally
+  # binds its own socket because uvicorn would chmod a uds= path to 0666.
+  # ls -l is the portable spelling: BSD and GNU stat disagree on -f/-c.
+  sock_mode="$(ls -ld "$SOCK" | awk '{print $1}')"
+  if [[ "$sock_mode" == ?rwx------ || "$sock_mode" == ?rw------- ]]; then
+    ok "llama-server (unix socket) is owner-only ($sock_mode)"
+  else
+    fail "llama-server (unix socket) is owner-only (got $sock_mode)"
+  fi
 else
   fail "llama-server (unix socket) becomes healthy" "$WORK/llama-sock.log"
 fi
@@ -304,6 +315,13 @@ if command -v mlx_lm.server >/dev/null && mlx_patched; then
       ok "mlx-server (unix socket) serves a completion"
     else
       fail "mlx-server (unix socket) serves a completion" "$WORK/mlx-sock-chat.json"
+    fi
+    # ls -l is the portable spelling: BSD and GNU stat disagree on -f/-c.
+  sock_mode="$(ls -ld "$SOCK" | awk '{print $1}')"
+    if [[ "$sock_mode" == ?rwx------ || "$sock_mode" == ?rw------- ]]; then
+      ok "mlx-server (unix socket) is owner-only ($sock_mode)"
+    else
+      fail "mlx-server (unix socket) is owner-only (got $sock_mode)"
     fi
   else
     fail "mlx-server (unix socket) becomes healthy" "$WORK/mlx-sock.log"

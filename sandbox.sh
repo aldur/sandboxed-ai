@@ -266,8 +266,15 @@ select_net() {
   [[ -n "$sock" ]] || return 0
   [[ "$sock" == *.sock ]] || die "--socket path must end in .sock: $sock"
   [[ "$sock" == /* ]] || sock="$PWD/$sock"
-  mkdir -p "${sock%/*}" # the profile grants only the socket path itself
-  rm -f "$sock"         # a stale socket file would make bind() fail
+  # -m 700 (applied only to a directory we create) and umask 077 below keep
+  # the socket owner-only: the servers authenticate nobody, and on macOS
+  # connecting to a UNIX socket needs write permission on it, so anything
+  # group- or world-writable is an open door to the model. Without the
+  # umask the mode is whatever the caller's happens to be — 0755 under the
+  # usual 022, but 0775 under 002.
+  mkdir -m 700 -p "${sock%/*}" # the profile grants only the socket path itself
+  rm -f "$sock"                # a stale socket file would make bind() fail
+  umask 077
   NET_SB="$PROFILES_DIR/net-unix.sb"
   NET_TARGET="$sock"
 }
