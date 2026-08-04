@@ -889,7 +889,8 @@ cmd_llama() {
   # Consumes --model/--mmproj/--socket; everything else passes through.
   # MODEL/MMPROJ are intentionally global: the flags override the env vars.
   local -a extra_args=()
-  local socket=""
+  local socket="" want_help=""
+  [[ $# -gt 0 ]] || want_help=1
   while [[ $# -gt 0 ]]; do
     case "$1" in
     --model)
@@ -907,20 +908,31 @@ cmd_llama() {
       socket="$2"
       shift 2
       ;;
+    -h | --help)
+      want_help=1
+      extra_args+=("$1")
+      shift
+      ;;
     *)
       extra_args+=("$1")
       shift
       ;;
     esac
   done
-  [[ -n "${MODEL:-}" ]] || die "no model specified — use --model or set MODEL env var"
+  local help_only=""
+  if [[ -z "${MODEL:-}" ]]; then
+    [[ -n "$want_help" ]] || die "no model specified — use --model or set MODEL env var"
+    help_only=1
+  fi
   # Before the download: a bad --socket should not cost a 17 GB fetch first.
   select_net "$socket"
 
-  local model_path model_dir model_alias llama_server pkg_store
-  model_path="$(resolve_model "$MODEL")"
-  model_dir="${model_path%/*}"
-  model_alias="${model_dir##*/}"
+  local model_path="" model_dir=/dev/null model_alias="" llama_server pkg_store
+  if [[ -z "$help_only" ]]; then
+    model_path="$(resolve_model "$MODEL")"
+    model_dir="${model_path%/*}"
+    model_alias="${model_dir##*/}"
+  fi
   llama_server="$(resolve_binary "${LLAMA_SERVER:-}" llama-server LLAMA_SERVER)"
   pkg_store="$(pkg_store_for "$llama_server")"
 
@@ -930,7 +942,7 @@ cmd_llama() {
   # and passed explicitly here. Quant labels resolve against projector files
   # only (see select_gguf_files); explicit filenames also work.
   local mmproj_path="" mmproj_dir=""
-  if [[ -n "${MMPROJ:-}" ]]; then
+  if [[ -z "$help_only" && -n "${MMPROJ:-}" ]]; then
     mmproj_path="$(resolve_model "$MMPROJ" mmproj)"
     mmproj_dir="${mmproj_path%/*}"
   fi
@@ -944,18 +956,24 @@ cmd_llama() {
   export HOME="$CACHE_DIR"
   resolve_darwin_dirs
 
-  local -a server_args=(--model "$model_path" --alias "$model_alias" --port "$PORT")
-  [[ -n "$mmproj_path" ]] && server_args+=(--mmproj "$mmproj_path")
-  [[ -n "$socket" ]] && server_args+=(--host "$NET_TARGET")
+  local -a server_args=()
+  if [[ -n "$help_only" ]]; then
+    server_args=(--help)
+    extra_args=()
+  else
+    server_args=(--model "$model_path" --alias "$model_alias" --port "$PORT")
+    [[ -n "$mmproj_path" ]] && server_args+=(--mmproj "$mmproj_path")
+    [[ -n "$socket" ]] && server_args+=(--host "$NET_TARGET")
 
-  printf 'Starting sandboxed llama-server:\n'
-  info "binary:" "$llama_server"
-  info "model:" "$model_path"
-  [[ -n "$mmproj_path" ]] && info "mmproj:" "$mmproj_path"
-  info "alias:" "$model_alias"
-  info "port:" "$PORT"
-  info "extra:" "${extra_args[*]:-none}"
-  printf '\n'
+    printf 'Starting sandboxed llama-server:\n'
+    info "binary:" "$llama_server"
+    info "model:" "$model_path"
+    [[ -n "$mmproj_path" ]] && info "mmproj:" "$mmproj_path"
+    info "alias:" "$model_alias"
+    info "port:" "$PORT"
+    info "extra:" "${extra_args[*]:-none}"
+    printf '\n'
+  fi
 
   cd "$CACHE_DIR"
 
@@ -987,7 +1005,8 @@ cmd_mlx() {
   # Consumes --model/--socket; everything else passes through.
   # MODEL is intentionally global: the flag overrides the env var.
   local -a extra_args=()
-  local socket=""
+  local socket="" want_help=""
+  [[ $# -gt 0 ]] || want_help=1
   while [[ $# -gt 0 ]]; do
     case "$1" in
     --model)
@@ -1000,18 +1019,34 @@ cmd_mlx() {
       socket="$2"
       shift 2
       ;;
+    -h | --help)
+      # Recorded, not consumed: with a model this passes through to the
+      # running server's --help; without one it selects help-only mode.
+      want_help=1
+      extra_args+=("$1")
+      shift
+      ;;
     *)
       extra_args+=("$1")
       shift
       ;;
     esac
   done
-  [[ -n "${MODEL:-}" ]] || die "no model specified — use --model or set MODEL env var"
+  # Help without a model: run the server's own --help under the normal
+  # sandbox with nothing to serve — MODEL_DIR becomes /dev/null, which the
+  # profile can reference but which grants no file (the TTY_DEV/CA_FILE
+  # convention). With a model, --help still resolves it first and passes
+  # through, which the download-integrity e2e test relies on.
+  local help_only=""
+  if [[ -z "${MODEL:-}" ]]; then
+    [[ -n "$want_help" ]] || die "no model specified — use --model or set MODEL env var"
+    help_only=1
+  fi
   # Before the download: a bad --socket should not cost a full repo fetch.
   select_net "$socket"
 
-  local model_dir
-  model_dir="$(resolve_mlx_model "$MODEL")"
+  local model_dir=/dev/null
+  [[ -n "$help_only" ]] || model_dir="$(resolve_mlx_model "$MODEL")"
 
   TMPDIR="$TMPDIR/mlx-server"
   CACHE_DIR="$CACHE_DIR/mlx-server"
@@ -1041,7 +1076,7 @@ cmd_mlx() {
   # clients can auto-discover the model and address it by name. A local
   # directory spec has no repo id and is served by path instead.
   local serve_ref="$model_dir"
-  if [[ ! -d "$MODEL" ]]; then
+  if [[ -z "$help_only" && ! -d "$MODEL" ]]; then
     seed_hf_cache "$MODEL" "$model_dir"
     serve_ref="$MODEL"
   fi
@@ -1056,7 +1091,11 @@ cmd_mlx() {
   # servers key their model cache on that string. Reported below rather than
   # recorded: /v1/models serves it to clients that discover.
   local mlx_server model_id="$serve_ref"
-  if grep -q '"vision_config"' "$model_dir/config.json"; then
+  if [[ -n "$help_only" ]]; then
+    # No config.json to inspect: show the text server's help. (Vision
+    # models are served by mlx_vlm.server, whose flags differ.)
+    mlx_server="$(resolve_binary "${MLX_SERVER:-}" mlx_lm.server MLX_SERVER)"
+  elif grep -q '"vision_config"' "$model_dir/config.json"; then
     mlx_server="$(resolve_binary "${MLX_VLM_SERVER:-}" mlx_vlm.server MLX_VLM_SERVER)"
   else
     mlx_server="$(resolve_binary "${MLX_SERVER:-}" mlx_lm.server MLX_SERVER)"
@@ -1071,23 +1110,29 @@ cmd_mlx() {
   resolve_darwin_dirs
   resolve_mlx_exec "$mlx_server"
 
-  printf 'Starting sandboxed %s:\n' "${mlx_server##*/}"
-  info "binary:" "$mlx_server"
-  info "model:" "$serve_ref"
-  info "model id:" "$model_id"
-  info "port:" "$PORT"
-  info "extra:" "${extra_args[*]:-none}"
-  printf '\n'
-
-  # --host pins mlx_vlm.server to loopback (it defaults to 0.0.0.0;
-  # mlx_lm.server already defaults to 127.0.0.1); both patched servers adopt
-  # llama-server's convention of a UNIX socket when --host ends in .sock.
-  # Extra args come last so they can override.
-  local -a server_args=(--model "$serve_ref" --port "$PORT")
-  if [[ -n "$socket" ]]; then
-    server_args+=(--host "$NET_TARGET")
+  local -a server_args=()
+  if [[ -n "$help_only" ]]; then
+    server_args=(--help)
+    extra_args=()
   else
-    server_args+=(--host 127.0.0.1)
+    printf 'Starting sandboxed %s:\n' "${mlx_server##*/}"
+    info "binary:" "$mlx_server"
+    info "model:" "$serve_ref"
+    info "model id:" "$model_id"
+    info "port:" "$PORT"
+    info "extra:" "${extra_args[*]:-none}"
+    printf '\n'
+
+    # --host pins mlx_vlm.server to loopback (it defaults to 0.0.0.0;
+    # mlx_lm.server already defaults to 127.0.0.1); both patched servers adopt
+    # llama-server's convention of a UNIX socket when --host ends in .sock.
+    # Extra args come last so they can override.
+    server_args=(--model "$serve_ref" --port "$PORT")
+    if [[ -n "$socket" ]]; then
+      server_args+=(--host "$NET_TARGET")
+    else
+      server_args+=(--host 127.0.0.1)
+    fi
   fi
 
   cd "$CACHE_DIR"
