@@ -5,21 +5,50 @@
 (import "system.sb")
 (import "com.apple.corefoundation.sb")
 
+;; ── Re-arm what system.sb hands out wholesale ────────────
+;; system.sb grants `(allow sysctl-read)` and an unfiltered process-info
+;; under "mostly harmless operations". Neither is harmless here: the
+;; process-info grant exposes other processes' argv (via KERN_PROCARGS2)
+;; and executable paths, and command lines routinely carry credentials —
+;; which would hand back exactly what the env allowlist in sandbox.sh
+;; takes away. Allows are additive and the last matching rule wins, so
+;; deny both here; every allowlist below is what actually takes effect.
+;; Verified by probe: without these denies kern.uuid, net.* and other
+;; processes' argv are all readable.
+(deny sysctl-read)
+(deny process-info*)
+;; Same shape: (version 1) makes system.sb grant every XPC service by name
+;; prefix, and CoreFoundation's import grants every preference domain, so
+;; the enumerated mach-lookup lists below would otherwise describe a
+;; tighter sandbox than the one that runs.
+(deny mach-lookup (xpc-service-name-prefix ""))
+(deny user-preference-read)
+
 ;; ── Process basics ───────────────────────────────────────
 (allow signal (target self))
-(allow process-info-pidinfo)
+(allow process-info-pidinfo (target self))
 
 ;; ── Mach (common) ────────────────────────────────────────
 (allow mach-lookup
   (global-name "com.apple.system.opendirectoryd.membership"))
 
-;; ── Sysctl (read-only, common subset) ────────────────────
+;; ── Sysctl (read-only) ───────────────────────────────────
+;; Hardware topology and OS version: what the runtimes probe to size thread
+;; pools and pick code paths. Neither subtree carries an identifier (no
+;; serial, no UUID — checked), unlike kern.uuid or the net.* tree, which
+;; the deny above keeps out.
 (allow sysctl-read
-  (sysctl-name "hw.ncpu")
-  (sysctl-name "hw.memsize")
-  (sysctl-name "hw.pagesize")
+  (sysctl-name-prefix "hw.")
+  (sysctl-name-prefix "machdep.cpu.")
+  (sysctl-name "kern.argmax")
+  (sysctl-name "kern.hostname")
+  (sysctl-name "kern.maxfilesperproc")
+  (sysctl-name "kern.osproductversion")
   (sysctl-name "kern.osrelease")
-  (sysctl-name "kern.osversion"))
+  (sysctl-name "kern.ostype")
+  (sysctl-name "kern.osversion")
+  (sysctl-name "kern.version")
+  (sysctl-name "sysctl.proc_translated"))
 
 ;; ── System libs (dyld, macOS frameworks) ─────────────────
 (allow file-read*

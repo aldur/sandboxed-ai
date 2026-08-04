@@ -20,12 +20,6 @@
   (literal (param "MLX_WRAPPED"))
   (literal (param "MLX_WRAPPED_INTERP")))
 
-;; ── Sysctl (CPython/its deps probe these on Apple Silicon) ─
-(allow sysctl-read
-  (sysctl-name "hw.machine")
-  (sysctl-name "kern.osproductversion")
-  (sysctl-name "sysctl.proc_translated"))
-
 ;; ── Filesystem ───────────────────────────────────────────
 ;; python's platform.mac_ver() reads the version plist
 (allow file-read*

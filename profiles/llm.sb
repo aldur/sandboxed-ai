@@ -13,7 +13,11 @@
   (subpath (param "TMPDIR")))
 
 ;; ── CoreFoundation / preferences ─────────────────────────
-(allow user-preference-read)
+;; Only the process's own domain: CoreFoundation reads preferences during
+;; startup, but the user's real domains (Finder, Dock, Terminal, …) are
+;; none of llm's business.
+(allow user-preference-read
+  (preference-domain "kCFPreferencesAnyApplication"))
 
 ;; ── Network config + TLS ─────────────────────────────────
 (allow file-read-metadata

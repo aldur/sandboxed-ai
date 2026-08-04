@@ -36,13 +36,6 @@
   (iokit-property "MetalPluginClassName")
   (iokit-property "model"))
 
-;; ── Sysctl (hardware topology for thread scheduling) ─────
-(allow sysctl-read
-  (sysctl-name "hw.physicalcpu")
-  (sysctl-name-prefix "hw.optional.")
-  (sysctl-name "hw.nperflevels")
-  (sysctl-name-prefix "hw.perflevel"))
-
 ;; ── Filesystem ───────────────────────────────────────────
 ;; GPU shader bundles
 (allow file-read*

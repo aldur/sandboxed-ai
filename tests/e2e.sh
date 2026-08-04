@@ -94,6 +94,11 @@ chat_ok() {
 DARWIN_TMP="$(realpath "$(getconf DARWIN_USER_TEMP_DIR)")"
 DARWIN_CACHE="$(realpath "$(getconf DARWIN_USER_CACHE_DIR)")"
 PKG_STORE="${TEST_PKG_STORE:-/nix}"
+# Resolved: the profiles grant exec on literal paths and seatbelt matches
+# the real one (python3 is a symlink to python3.13 in nixpkgs). Empty when
+# the interpreter is not in the package store the profiles grant.
+PY="$(realpath "$(command -v python3)" 2>/dev/null || true)"
+[[ "$PY" == "$PKG_STORE"/* ]] || PY=""
 
 # Run /bin/sh -c "$1" under pi.sb (the one profile that permits a shell),
 # with the workspace at $SCRATCH/ws. Grants mirror cmd_pi.
@@ -308,6 +313,45 @@ else
   skip "mlx-server (unix socket)" "mlx-lm build lacks the unix-socket patch — reload the devshell"
 fi
 
+# ── system.sb's wholesale grants stay re-armed ────────────
+# system.sb (imported by common.sb) ends with a bare (allow sysctl-read)
+# and an unfiltered process-info grant. common.sb denies both so the
+# curated allowlists mean something; without those denies a sandboxed tool
+# reads other processes' argv, which is where credentials live.
+cat >"$SCRATCH/ws/leak.py" <<'PYEOF'
+import ctypes, ctypes.util, sys
+libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+bad = []
+# Values outside the allowlist must be refused.
+for name in ("kern.uuid", "net.inet.ip.forwarding", "kern.boottime"):
+    buf = ctypes.create_string_buffer(1024); n = ctypes.c_size_t(1024)
+    if libc.sysctlbyname(name.encode(), buf, ctypes.byref(n), None, 0) == 0:
+        bad.append("sysctl:" + name)
+# Another process's argv (KERN_PROCARGS2 = 49) and executable path.
+for pid in range(1, 400):
+    mib = (ctypes.c_int * 3)(1, 49, pid)
+    buf = ctypes.create_string_buffer(8192); n = ctypes.c_size_t(8192)
+    if libc.sysctl(mib, 3, buf, ctypes.byref(n), None, 0) == 0 and n.value > 4:
+        bad.append("argv:%d" % pid); break
+path = ctypes.create_string_buffer(4096)
+for pid in range(1, 400):
+    if libc.proc_pidpath(pid, path, 4096) > 0:
+        bad.append("pidpath:%d" % pid); break
+print(" ".join(bad))
+sys.exit(1 if bad else 0)
+PYEOF
+if [[ -n "$PY" ]]; then
+  leak_out="$(pi_sh "'$PY' -I '$SCRATCH/ws/leak.py'")"
+  leak_rc=$?
+  if [[ $leak_rc -eq 0 ]]; then
+    ok "probe: system.sb's blanket sysctl/process-info grants are re-armed"
+  else
+    fail "probe: system.sb's blanket sysctl/process-info grants are re-armed (leaked: ${leak_out:-python failed})"
+  fi
+else
+  skip "probe: system.sb's blanket sysctl/process-info grants are re-armed" "no python3 in $PKG_STORE"
+fi
+
 # ── Download integrity ────────────────────────────────────
 # Downloads are verified against the digests HF publishes (SHA-256 for LFS
 # weights, git blob SHA-1 for the small files). Tamper with a cached file
@@ -371,10 +415,7 @@ fi
 # Python's http.server resolves the bind address at startup; the reverse
 # lookup once escalated into mDNSResponder and tripped the fatal
 # network-outbound deny (fixed by the hosts-file grant + plain deny).
-# Resolved: the profile grants exec on a literal path and seatbelt matches
-# the real one (python3 is a symlink to python3.13 in nixpkgs).
-PY="$(realpath "$(command -v python3)" 2>/dev/null || true)"
-if [[ "$PY" == "$PKG_STORE"/* ]]; then
+if [[ -n "$PY" ]]; then
   mkdir -p "$STATE_DIR/cache" "$STATE_DIR/tmp"
   if (cd "$STATE_DIR/cache" && sandbox-exec \
     -D COMMON_SB="$ROOT/profiles/common.sb" \
