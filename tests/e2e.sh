@@ -196,6 +196,48 @@ else
   skip "pi answers through its sandbox" "pi or PI_LLAMA_DIR unavailable"
 fi
 
+# ── pi's interactive TUI (raw mode, on a real pty) ────────
+# `pi -p` never enters raw mode, so it would not notice a missing terminal
+# or input grant. Drive the full TUI on a pty instead and assert it renders
+# and accepts a keystroke.
+if [[ -n "$PY" ]] && [[ -n "${PI_LLAMA_DIR:-}" ]] && command -v pi >/dev/null; then
+  mkdir -p "$SCRATCH/tui"
+  if "$PY" - "$SANDBOX" "$SCRATCH/tui" >"$WORK/tui.log" 2>&1 <<'PYEOF'; then
+import os, pty, select, sys, time, re
+sandbox, ws = sys.argv[1], sys.argv[2]
+pid, fd = pty.fork()
+if pid == 0:
+    os.environ["TERM"] = "xterm-256color"
+    os.execv(sandbox, [sandbox, "pi", "-w", ws])
+out, deadline, sent = b"", time.time() + 30, False
+while time.time() < deadline:
+    r, _, _ = select.select([fd], [], [], 1)
+    if r:
+        try: chunk = os.read(fd, 65536)
+        except OSError: break
+        if not chunk: break
+        out += chunk
+    if not sent and len(out) > 200:
+        time.sleep(2); os.write(fd, b"hello\r")
+        time.sleep(3); os.write(fd, b"\x03\x03"); sent = True
+try: os.kill(pid, 9)
+except ProcessLookupError: pass
+os.waitpid(pid, 0)
+text = out.decode(errors="replace")
+ansi = len(re.findall(r"\x1b\[[0-9;?]*[a-zA-Z]", text))
+rawmode = bool(re.search(r"\x1b\[\?(1049|1006|25)", text))
+denied = [l for l in text.splitlines() if "not permitted" in l or "EPERM" in l]
+print("ansi=%d rawmode=%s denied=%s" % (ansi, rawmode, denied[:2]))
+sys.exit(0 if ansi > 50 and rawmode and not denied else 1)
+PYEOF
+    ok "pi renders its TUI and takes input on a pty"
+  else
+    fail "pi renders its TUI and takes input on a pty" "$WORK/tui.log"
+  fi
+else
+  skip "pi renders its TUI and takes input on a pty" "pi, PI_LLAMA_DIR or python3 unavailable"
+fi
+
 # ── Sandbox denial probes (pi.sb, server still up) ────────
 if pi_sh "echo canary > '$SCRATCH/ws/probe' && cat '$SCRATCH/ws/probe'" >/dev/null; then
   ok "probe: workspace is writable"
