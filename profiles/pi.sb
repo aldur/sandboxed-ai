@@ -2,19 +2,18 @@
 (version 1)
 (deny default)
 
-;; pi (pi-coding-agent) sandbox — shells/TTY/server-dialing come from
-;; client.sb, this file adds pi's state, the workspace, and what a Node
-;; TUI needs on top.
+;; pi (pi-coding-agent) sandbox — shells, TTY and server-dialing come from
+;; client.sb; this file adds pi's own state and its workspace.
+;;
+;; Everything a TUI is assumed to need but does not: WindowServer and HID
+;; lookups (raw mode is tcsetattr on the terminal client.sb grants — with
+;; com.apple.windowserver.active the agent could enumerate every on-screen
+;; window instead), POSIX shared memory and semaphores, CoreServices and
+;; SystemConfiguration lookups, the xcode-select paths, locale and
+;; timezone data, and process-info-setcontrol. Each was removed and the
+;; agent re-run, non-interactively and as a full TUI on a pty.
 (import (param "COMMON_SB"))
 (import (param "CLIENT_SB"))
-
-;; ── Process ──────────────────────────────────────────────
-(allow process-info-setcontrol)
-
-;; ── Network config + TLS ─────────────────────────────────
-(allow file-read*
-  (literal "/private/etc/ssl/cert.pem")
-  (literal "/Library/Preferences/com.apple.networkd.plist"))
 
 ;; ── pi state (~/.pi etc.; HOME points here) + scratch ────
 ;; Both live under the per-user state root, outside the workspace.
@@ -28,40 +27,6 @@
 (allow file-read*
   (subpath (param "PI_LLAMA_DIR")))
 
-;; ── xcode-select (git toolchain detection) ───────────────
-(allow file-read* file-read-metadata
-  (literal "/private/var/select/developer_dir")
-  (subpath "/Library/Developer/CommandLineTools")
-  (subpath "/Applications/Xcode.app/Contents/Developer"))
-
-;; ── Mach (IPC) ───────────────────────────────────────────
-;; No WindowServer and no HID here: raw mode is tcsetattr on the terminal
-;; granted in client.sb, not a window-system or input-device capability.
-;; With com.apple.windowserver.active the agent could enumerate every
-;; on-screen window — owner names and geometry — via
-;; CGWindowListCopyWindowInfo; llm.sb, which never had the grant, returns
-;; NULL for the same call.
-(allow mach-lookup
-  (global-name "com.apple.CoreServices.coreservicesd")
-  (global-name "com.apple.SystemConfiguration.configd"))
-
-;; ── Sysctl ───────────────────────────────────────────────
-(allow sysctl-read sysctl-write
-  (sysctl-name "kern.maxfilesperproc"))
-
 ;; ── Workspace: full read + write ─────────────────────────
 (allow file-read* file-write*
   (subpath (param "WORKSPACE")))
-
-;; ── Semaphores ───────────────────────────────────────────
-;; Node's libuv opens unnamed semaphores; no POSIX shared memory is needed
-;; (the "com.apple." shm prefix this used to carry is a superset of the
-;; segments the GPU servers use, which a client has no business touching).
-(allow ipc-posix-sem-open
-       ipc-posix-sem-post
-       ipc-posix-sem-wait)
-
-;; ── System libs (locale + timezone + devices) ────────────
-(allow file-read*
-  (subpath "/usr/share/locale")
-  (subpath "/private/var/db/timezone"))

@@ -21,17 +21,18 @@
   (literal (param "MLX_WRAPPED_INTERP")))
 
 ;; ── Filesystem ───────────────────────────────────────────
-;; python's platform.mac_ver() reads the version plist
-(allow file-read*
-  (literal "/System/Library/CoreServices/SystemVersion.plist"))
-
 ;; Python's http.server calls getfqdn() at bind; with the hosts file
 ;; readable, libinfo resolves 127.0.0.1 → localhost from it and never
 ;; falls through to mDNSResponder (whose socket the deny below kills on).
 (allow file-read*
   (literal "/private/etc/hosts"))
 
-;; TLS trust store — the CA bundle certifi opens
+;; TLS trust store — the CA bundle certifi opens. Kept although the
+;; current tests pass without it: huggingface_hub has historically built
+;; an SSL context even under HF_HUB_OFFLINE, and nixpkgs' certifi opens
+;; this path verbatim at import (see resolve_ca_file in sandbox.sh). One
+;; read of a public bundle, and the failure it prevents is a hard import
+;; error on someone else's machine.
 (allow file-read*
   (literal (param "CA_FILE")))
 

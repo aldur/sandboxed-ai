@@ -1,6 +1,12 @@
 ; vim:ft=scheme
 ;; common.sb — base rules imported first by every profile; the servers
 ;; additionally import server.sb, the clients client.sb.
+;;
+;; Every grant here (and in the other profiles) survived tests/ablate.py:
+;; each one was removed in turn and the tools re-run, so what remains is
+;; what something actually needs. Rules that only system.sb's own grants
+;; made redundant — /usr/lib, the frameworks, /dev/null, /dev/std* — are
+;; gone rather than kept as decoration.
 
 (import "system.sb")
 (import "com.apple.corefoundation.sb")
@@ -19,48 +25,26 @@
 (deny process-info*)
 ;; Same shape: (version 1) makes system.sb grant every XPC service by name
 ;; prefix, and CoreFoundation's import grants every preference domain, so
-;; the enumerated mach-lookup lists below would otherwise describe a
-;; tighter sandbox than the one that runs.
+;; the enumerated lists in the other profiles would otherwise describe a
+;; tighter sandbox than the one that runs. server.sb re-allows the one XPC
+;; service Metal needs.
 (deny mach-lookup (xpc-service-name-prefix ""))
 (deny user-preference-read)
 
 ;; ── Process basics ───────────────────────────────────────
-(allow signal (target self))
 (allow process-info-pidinfo (target self))
-
-;; ── Mach (common) ────────────────────────────────────────
-(allow mach-lookup
-  (global-name "com.apple.system.opendirectoryd.membership"))
 
 ;; ── Sysctl (read-only) ───────────────────────────────────
 ;; Hardware topology and OS version: what the runtimes probe to size thread
-;; pools and pick code paths. Neither subtree carries an identifier (no
-;; serial, no UUID — checked), unlike kern.uuid or the net.* tree, which
-;; the deny above keeps out.
+;; pools and pick code paths. Neither carries an identifier (no serial, no
+;; UUID — checked), unlike kern.uuid or the net.* tree, which the deny
+;; above keeps out. kern.hostname is what getfqdn() resolves at bind.
 (allow sysctl-read
   (sysctl-name-prefix "hw.")
-  (sysctl-name-prefix "machdep.cpu.")
-  (sysctl-name "kern.argmax")
   (sysctl-name "kern.hostname")
-  (sysctl-name "kern.maxfilesperproc")
-  (sysctl-name "kern.osproductversion")
   (sysctl-name "kern.osrelease")
   (sysctl-name "kern.ostype")
-  (sysctl-name "kern.osversion")
-  (sysctl-name "kern.version")
-  (sysctl-name "sysctl.proc_translated"))
-
-;; ── System libs (dyld, macOS frameworks) ─────────────────
-(allow file-read*
-  (subpath "/usr/lib")
-  (subpath "/System/Library/Frameworks")
-  (subpath "/System/Library/PrivateFrameworks")
-  (subpath "/System/Library/Caches/com.apple.dyld")
-  (subpath "/Library/Apple/usr/lib")
-  (literal "/dev/null")
-  (literal "/dev/zero")
-  (literal "/dev/random")
-  (literal "/dev/urandom"))
+  (sysctl-name "kern.version"))
 
 ;; ── Package store (read + executable mapping) ───────────
 ;; Set by sandbox.sh: /nix for Nix, /opt/homebrew for Homebrew.
@@ -68,16 +52,10 @@
   (subpath (param "PKG_STORE")))
 
 ;; ── Path traversal (stat on parent directories) ─────────
-;; SQLite and other tools need to stat() ancestor directories
-;; when resolving absolute paths, and the per-user darwin dirs
-;; granted above sit two levels inside /private/var/folders.
-;; This only allows metadata (directory existence checks), not
-;; reading file contents.
+;; SQLite and other tools need to stat() ancestor directories when
+;; resolving absolute paths, and the per-user darwin dirs the servers get
+;; sit two levels inside /private/var/folders. Metadata only — directory
+;; existence checks, not file contents.
 (allow file-read-metadata
   (subpath "/Users")
   (subpath "/private/var/folders"))
-
-;; ── Logging ──────────────────────────────────────────────
-(allow file-write*
-  (literal "/dev/stdout")
-  (literal "/dev/stderr"))

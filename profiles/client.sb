@@ -8,7 +8,6 @@
   (subpath (param "PKG_STORE"))
   (literal "/usr/bin/env")
   (literal "/bin/bash")
-  (literal "/bin/zsh")
   (literal "/bin/sh"))
 
 (allow process-fork)

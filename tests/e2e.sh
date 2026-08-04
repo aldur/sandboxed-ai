@@ -166,6 +166,30 @@ else
   skip "env: caller credentials do not reach the sandbox" "server not running"
 fi
 
+# ── Cold Metal cache (shader compilation) ─────────────────
+# With a warm cache llama.cpp loads a precompiled Metal library and never
+# reaches MTLCompilerService, so a missing XPC grant stays invisible until
+# someone's first run on a fresh machine — which is what CI is. Opt in
+# locally with SANDBOXED_AI_TEST_COLD_METAL=1: it clears the *user's*
+# Metal cache, which other apps then recompile.
+if [[ "${SANDBOXED_AI_TEST_COLD_METAL:-}" == 1 ]]; then
+  stop_server
+  rm -rf "$DARWIN_CACHE/com.apple.metal" "$DARWIN_CACHE/com.apple.metalfe" \
+    "$STATE_DIR/cache/llama-server"
+  start_server llama-cold llama-server --model "$TEST_GGUF_MODEL" -lv 6
+  if wait_http "http://127.0.0.1:$PORT/health" 180 &&
+    grep -q 'assigned to device MTL0' "$WORK/llama-cold.log"; then
+    ok "llama-server compiles shaders from a cold Metal cache (on the GPU)"
+  else
+    fail "llama-server compiles shaders from a cold Metal cache (on the GPU)" "$WORK/llama-cold.log"
+  fi
+  stop_server
+  start_server llama-tcp llama-server --model "$TEST_GGUF_MODEL"
+  wait_http "http://127.0.0.1:$PORT/health" 180 || true
+else
+  skip "llama-server compiles shaders from a cold Metal cache" "set SANDBOXED_AI_TEST_COLD_METAL=1 (clears the user's Metal cache)"
+fi
+
 # ── llm client against the running server ─────────────────
 if command -v llm >/dev/null; then
   if "$SANDBOX" llm 'Say OK' >"$WORK/llm.out" 2>&1 && [[ -s "$WORK/llm.out" ]]; then

@@ -2,29 +2,17 @@
 (version 1)
 (deny default)
 
-;; llm CLI sandbox — shells/TTY/server-dialing come from client.sb, this
-;; file adds llm's state and Python's TLS/config probing on top.
+;; llm CLI sandbox — shells, TTY and server-dialing come from client.sb;
+;; this file adds llm's own state and nothing else.
+;;
+;; The TLS and network-configuration grants this used to carry (/etc/ssl,
+;; SystemConfiguration, preference domains) are gone: the only endpoint
+;; this sandbox can reach is the local server, so there is no TLS session
+;; to establish and no proxy configuration to consult.
 (import (param "COMMON_SB"))
 (import (param "CLIENT_SB"))
 
-;; ── LLM state ──────────────────────────────────────────
+;; ── LLM state (HOME points here) + scratch ───────────────
 (allow file-read* file-write*
   (subpath (param "LLM_USER_PATH"))
   (subpath (param "TMPDIR")))
-
-;; ── CoreFoundation / preferences ─────────────────────────
-;; Only the process's own domain: CoreFoundation reads preferences during
-;; startup, but the user's real domains (Finder, Dock, Terminal, …) are
-;; none of llm's business.
-(allow user-preference-read
-  (preference-domain "kCFPreferencesAnyApplication"))
-
-;; ── Network config + TLS ─────────────────────────────────
-(allow file-read-metadata
-  (subpath "/etc")
-  (subpath "/private/etc"))
-(allow file-read*
-  (subpath "/private/etc/ssl")
-  (subpath "/etc/ssl"))
-(allow mach-lookup
-  (global-name "com.apple.SystemConfiguration.configd"))
