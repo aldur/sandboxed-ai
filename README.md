@@ -87,8 +87,9 @@ llama-server options:
                         to list available GGUF files.
   --mmproj SPEC         Multimodal projector for vision models, same spec
                         grammar. Quant labels match only mmproj-*.gguf files.
-  --socket PATH         Serve on a UNIX domain socket (path must end in
-                        .sock) instead of TCP.
+  --host ADDR           TCP address to bind (default 127.0.0.1), or a
+                        UNIX domain socket when ADDR ends in .sock.
+  --port PORT           TCP port to bind (default 8080).
   All other flags are passed through to llama-server.
 
 mlx-server options:
@@ -96,8 +97,9 @@ mlx-server options:
                         (e.g. mlx-community/Qwen3-8B-4bit). Vision models
                         (config.json with a vision tower) are served with
                         mlx_vlm.server, text models with mlx_lm.server.
-  --socket PATH         Serve on a UNIX domain socket (path must end in
-                        .sock) instead of TCP.
+  --host ADDR           TCP address to bind (default 127.0.0.1), or a
+                        UNIX domain socket when ADDR ends in .sock.
+  --port PORT           TCP port to bind (default 8080).
   All other flags are passed through to the server.
 
 pi options:

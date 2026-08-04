@@ -7,7 +7,7 @@
 # The environment is an allowlist, not an inheritance: see sandbox_env.
 #
 # Subcommand → seatbelt profile (all import common.sb; the servers also
-# import net-tcp.sb or net-unix.sb, chosen by --socket):
+# import net-tcp.sb or net-unix.sb, chosen by a .sock --host):
 #   llama-server → llama-server.sb    mlx-server → mlx-server.sb
 #   pi           → pi.sb              llm        → llm.sb
 #
@@ -80,7 +80,8 @@ HOME_PARENT="${HOME_DIR%/*}"
 [[ -n "$HOME_PARENT" ]] || HOME_PARENT=/
 
 SANDBOX_EXEC=/usr/bin/sandbox-exec
-readonly SCRIPT_DIR PROFILES_DIR PROG PORT STATE_DIR MODELS_DIR HOME_DIR HOME_PARENT SANDBOX_EXEC
+# PORT stays writable: the server subcommands take --port.
+readonly SCRIPT_DIR PROFILES_DIR PROG STATE_DIR MODELS_DIR HOME_DIR HOME_PARENT SANDBOX_EXEC
 
 # ── Output & usage ────────────────────────────────────────
 die() {
@@ -118,8 +119,9 @@ llama-server options:
                         to list available GGUF files.
   --mmproj SPEC         Multimodal projector for vision models, same spec
                         grammar. Quant labels match only mmproj-*.gguf files.
-  --socket PATH         Serve on a UNIX domain socket (path must end in
-                        .sock) instead of TCP.
+  --host ADDR           TCP address to bind (default 127.0.0.1), or a
+                        UNIX domain socket when ADDR ends in .sock.
+  --port PORT           TCP port to bind (default 8080).
   All other flags are passed through to llama-server.
 
 mlx-server options:
@@ -127,8 +129,9 @@ mlx-server options:
                         (e.g. mlx-community/Qwen3-8B-4bit). Vision models
                         (config.json with a vision tower) are served with
                         mlx_vlm.server, text models with mlx_lm.server.
-  --socket PATH         Serve on a UNIX domain socket (path must end in
-                        .sock) instead of TCP.
+  --host ADDR           TCP address to bind (default 127.0.0.1), or a
+                        UNIX domain socket when ADDR ends in .sock.
+  --port PORT           TCP port to bind (default 8080).
   All other flags are passed through to the server.
 
 pi options:
@@ -293,7 +296,7 @@ resolve_ca_file() {
 # Network personality for the server sandboxes, as two mutable globals the
 # exec blocks pass through: NET_SB is the profile snippet imported via
 # (import (param "NET_SB")), NET_TARGET the one filter value it consumes.
-# Default is TCP on $PORT (net-tcp.sb); a --socket path selects net-unix.sb
+# Default is TCP on $PORT (net-tcp.sb); a .sock --host selects net-unix.sb
 # with the socket path as the filter — each personality grants nothing of
 # the other's surface. The path must end in .sock (all three servers key
 # UNIX-socket mode off that suffix on --host) and is normalized here, to
@@ -311,7 +314,7 @@ select_net() {
 
   local sock="${1:-}"
   [[ -n "$sock" ]] || return 0
-  [[ "$sock" == *.sock ]] || die "--socket path must end in .sock: $sock"
+  [[ "$sock" == *.sock ]] || die "socket path must end in .sock: $sock"
   [[ "$sock" == /* ]] || sock="$PWD/$sock"
   # -m 700 (applied only to a directory we create) and umask 077 below keep
   # the socket owner-only: the servers authenticate nobody, and on macOS
@@ -324,23 +327,22 @@ select_net() {
   [[ -n "$dir" ]] || dir=/
   mkdir -m 700 -p "$dir" # the profile grants only the socket path itself
 
-  # Seatbelt matches resolved paths and the profile filter is a literal, so
-  # a symlinked component (macOS /tmp -> /private/tmp) would make bind()
-  # miss the grant. Resolve the directory (it exists now) and keep --host
-  # and the profile param agreeing on the physical path.
+  # Resolve symlinks: on macOS /tmp really is /private/tmp, and seatbelt
+  # compares against the resolved path. The profile grant and the server's
+  # --host both need the real one, or bind() gets denied.
   dir="$(realpath "$dir" 2>/dev/null || (cd "$dir" && pwd -P))"
   sock="$dir/${sock##*/}"
 
   # A stale socket file would make bind() fail, so it has to go — but this
   # runs unsandboxed with full user privileges on a path the caller typed,
   # so only ever unlink a socket, and never one something is listening on:
-  # a fat-fingered --socket /opt/homebrew/var/run/mysqld/mysqld.sock must
+  # a fat-fingered --host /opt/homebrew/var/run/mysqld/mysqld.sock must
   # not take out a live database.
   if [[ -e "$sock" || -L "$sock" ]]; then
     [[ -S "$sock" ]] ||
-      die "--socket path exists and is not a socket: $sock"
+      die "socket path exists and is not a socket: $sock"
     ! socket_in_use "$sock" ||
-      die "--socket path is already served by another process: $sock"
+      die "socket path is already served by another process: $sock"
     rm -f "$sock"
   fi
   umask 077
@@ -649,13 +651,14 @@ resolve_model() {
   [[ -z "$sel" ]] || safe_rel_path "$sel" ||
     die "invalid file selection: $sel"
 
-  # Local-first, mirroring resolve_mlx_model's .download-complete marker: a
-  # selection that resolves entirely to files hf_download verified on
-  # arrival (their digest sidecars exist) costs no HF round-trip and works
-  # offline. A split set counts only when every shard is present — the
-  # -NNNNN-of-NNNNN suffix says how many that is. Anything short of that
-  # falls through to remote resolution below. Delete the sidecars (or the
-  # files) to re-sync with upstream.
+  # If everything the selection needs is already downloaded and verified
+  # (each file has the digest sidecar hf_download writes), there is no
+  # reason to talk to Hugging Face at all — resolve locally and return.
+  # A split model only counts when every shard is present; the
+  # -00001-of-00003 suffix says how many to expect. Anything missing or
+  # unverified falls through to the normal remote path below. Deleting
+  # the sidecars (or the files) forces a re-sync with upstream, same as
+  # the .download-complete marker in resolve_mlx_model.
   if [[ -n "$sel" && -d "$MODELS_DIR/$repo" ]]; then
     local local_listing
     local_listing="$(cd "$MODELS_DIR/$repo" && find . -name '*.gguf' | sed 's|^\./||')"
@@ -961,10 +964,10 @@ parse_workspace() {
 }
 
 cmd_llama() {
-  # Consumes --model/--mmproj/--socket; everything else passes through.
+  # Consumes --model/--mmproj/--host; everything else passes through.
   # MODEL/MMPROJ are intentionally global: the flags override the env vars.
   local -a extra_args=()
-  local socket="" want_help=""
+  local socket="" want_help="" host_arg="" tcp_host="" port_arg=""
   [[ $# -gt 0 ]] || want_help=1
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -978,10 +981,38 @@ cmd_llama() {
       MMPROJ="$2"
       shift 2
       ;;
-    --socket)
-      need_arg "$@"
-      socket="$2"
-      shift 2
+    --host | --host=*)
+      # Same rule the servers use: a path ending in .sock means "serve on
+      # that unix socket", anything else is a TCP address.
+      host_arg="${1#--host}"
+      host_arg="${host_arg#=}"
+      if [[ -n "$host_arg" ]]; then
+        shift
+      else
+        need_arg "$@"
+        host_arg="$2"
+        shift 2
+      fi
+      if [[ "$host_arg" == *.sock ]]; then
+        socket="$host_arg"
+      else
+        tcp_host="$host_arg"
+      fi
+      ;;
+    --port | --port=*)
+      # Consumed rather than passed through: the sandbox grant has to name
+      # the same port the server binds.
+      port_arg="${1#--port}"
+      port_arg="${port_arg#=}"
+      if [[ -n "$port_arg" ]]; then
+        shift
+      else
+        need_arg "$@"
+        port_arg="$2"
+        shift 2
+      fi
+      [[ "$port_arg" =~ ^[0-9]+$ ]] || die "not a port number: $port_arg"
+      PORT="$port_arg"
       ;;
     -h | --help)
       want_help=1
@@ -999,7 +1030,7 @@ cmd_llama() {
     [[ -n "$want_help" ]] || die "no model specified — use --model or set MODEL env var"
     help_only=1
   fi
-  # Before the download: a bad --socket should not cost a 17 GB fetch first.
+  # Before the download: a bad --host should not cost a 17 GB fetch first.
   select_net "$socket"
 
   local model_path="" model_dir=/dev/null model_alias="" llama_server pkg_store
@@ -1039,7 +1070,11 @@ cmd_llama() {
   else
     server_args=(--model "$model_path" --alias "$model_alias" --port "$PORT")
     [[ -n "$mmproj_path" ]] && server_args+=(--mmproj "$mmproj_path")
-    [[ -n "$socket" ]] && server_args+=(--host "$NET_TARGET")
+    if [[ -n "$socket" ]]; then
+      server_args+=(--host "$NET_TARGET")
+    elif [[ -n "$tcp_host" ]]; then
+      server_args+=(--host "$tcp_host")
+    fi
 
     printf 'Starting sandboxed llama-server:\n'
     info "binary:" "$llama_server"
@@ -1084,10 +1119,10 @@ cmd_llama() {
 }
 
 cmd_mlx() {
-  # Consumes --model/--socket; everything else passes through.
+  # Consumes --model/--host; everything else passes through.
   # MODEL is intentionally global: the flag overrides the env var.
   local -a extra_args=()
-  local socket="" want_help=""
+  local socket="" want_help="" host_arg="" tcp_host="" port_arg=""
   [[ $# -gt 0 ]] || want_help=1
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1096,10 +1131,36 @@ cmd_mlx() {
       MODEL="$2"
       shift 2
       ;;
-    --socket)
-      need_arg "$@"
-      socket="$2"
-      shift 2
+    --host | --host=*)
+      # Same as in cmd_llama: .sock means a unix socket, otherwise TCP.
+      host_arg="${1#--host}"
+      host_arg="${host_arg#=}"
+      if [[ -n "$host_arg" ]]; then
+        shift
+      else
+        need_arg "$@"
+        host_arg="$2"
+        shift 2
+      fi
+      if [[ "$host_arg" == *.sock ]]; then
+        socket="$host_arg"
+      else
+        tcp_host="$host_arg"
+      fi
+      ;;
+    --port | --port=*)
+      # Consumed rather than passed through, as in cmd_llama.
+      port_arg="${1#--port}"
+      port_arg="${port_arg#=}"
+      if [[ -n "$port_arg" ]]; then
+        shift
+      else
+        need_arg "$@"
+        port_arg="$2"
+        shift 2
+      fi
+      [[ "$port_arg" =~ ^[0-9]+$ ]] || die "not a port number: $port_arg"
+      PORT="$port_arg"
       ;;
     -h | --help)
       # Recorded, not consumed: with a model this passes through to the
@@ -1124,7 +1185,7 @@ cmd_mlx() {
     [[ -n "$want_help" ]] || die "no model specified — use --model or set MODEL env var"
     help_only=1
   fi
-  # Before the download: a bad --socket should not cost a full repo fetch.
+  # Before the download: a bad --host should not cost a full repo fetch.
   select_net "$socket"
 
   local model_dir=/dev/null
@@ -1210,15 +1271,16 @@ cmd_mlx() {
     info "extra:" "${extra_args[*]:-none}"
     printf '\n'
 
-    # --host pins mlx_vlm.server to loopback (it defaults to 0.0.0.0;
-    # mlx_lm.server already defaults to 127.0.0.1); both patched servers adopt
-    # llama-server's convention of a UNIX socket when --host ends in .sock.
+    # Unless the caller picked a TCP address, pin mlx_vlm.server to
+    # loopback (it defaults to 0.0.0.0; mlx_lm.server already defaults to
+    # 127.0.0.1). Both patched servers adopt llama-server's convention of
+    # a UNIX socket when --host ends in .sock.
     # Extra args come last so they can override.
     server_args=(--model "$serve_ref" --port "$PORT")
     if [[ -n "$socket" ]]; then
       server_args+=(--host "$NET_TARGET")
     else
-      server_args+=(--host 127.0.0.1)
+      server_args+=(--host "${tcp_host:-127.0.0.1}")
     fi
   fi
 

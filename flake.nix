@@ -80,7 +80,7 @@
         overlays = [
           dotfiles.overlays.mlx
           # Serve on a UNIX domain socket when --host ends in .sock,
-          # mirroring llama-server's convention (see sandbox.sh --socket).
+          # mirroring llama-server's convention (see sandbox.sh --host).
           # Applied inside the package set — not on the leaf application — so
           # mlx-vlm, which depends on mlx-lm, shares the same patched build.
           (final: prev: {
@@ -114,7 +114,7 @@
             mlxPython.pkgs.torchvision
           ];
           # Serve on a UNIX domain socket when --host ends in .sock,
-          # mirroring llama-server's convention (see sandbox.sh --socket).
+          # mirroring llama-server's convention (see sandbox.sh --host).
           patches = (old.patches or [ ]) ++ [ ./patches/mlx-vlm-unix-socket.patch ];
         })
       );

@@ -507,7 +507,7 @@ stop_server
 
 # ── llama-server: UNIX socket ─────────────────────────────
 SOCK="$SCRATCH/llama.sock"
-start_server llama-sock llama-server --model "$TEST_GGUF_MODEL" --socket "$SOCK"
+start_server llama-sock llama-server --model "$TEST_GGUF_MODEL" --host "$SOCK"
 if wait_http "--unix-socket $SOCK http://localhost/health" 180; then
   ok "llama-server (unix socket) becomes healthy"
   if chat_ok "--unix-socket $SOCK http://localhost/v1/chat/completions" "$WORK/llama-sock-chat.json"; then
@@ -555,6 +555,21 @@ else
   fail "llama-server (cached) resolves without HF round-trips" "$WORK/llama-cached.log"
 fi
 stop_server
+
+# ── llama-server: UNIX socket under a symlinked path ──────
+# On macOS /tmp is a symlink to /private/tmp, and seatbelt only matches
+# resolved paths. Sockets under /tmp used to fail to bind because the
+# profile got the verbatim path; select_net resolves it now.
+TMP_SOCK="/tmp/sandboxed-ai-e2e-$$.sock"
+start_server llama-sock-tmp llama-server --model "$TEST_GGUF_MODEL" --host "$TMP_SOCK"
+if wait_http "--unix-socket $TMP_SOCK http://localhost/health" 180; then
+  ok "llama-server (unix socket under /tmp symlink) becomes healthy"
+else
+  fail "llama-server (unix socket under /tmp symlink) becomes healthy" "$WORK/llama-sock-tmp.log"
+fi
+stop_server
+rm -f "$TMP_SOCK"
+
 # ── mlx-server: TCP ───────────────────────────────────────
 if [[ -n "$MLX_SERVER" ]]; then
   start_server mlx-tcp mlx-server --model "$TEST_MLX_MODEL"
@@ -595,7 +610,7 @@ mlx_patched() {
 }
 if [[ -n "$MLX_SERVER" ]] && mlx_patched; then
   SOCK="$SCRATCH/mlx.sock"
-  start_server mlx-sock mlx-server --model "$TEST_MLX_MODEL" --socket "$SOCK"
+  start_server mlx-sock mlx-server --model "$TEST_MLX_MODEL" --host "$SOCK"
   if wait_http "--unix-socket $SOCK http://localhost/v1/models" 180; then
     ok "mlx-server (unix socket) becomes healthy"
     if chat_ok "--unix-socket $SOCK http://localhost/v1/chat/completions" "$WORK/mlx-sock-chat.json"; then
@@ -704,10 +719,10 @@ spec_reject llama-server '../../org/repo:file.gguf'
 spec_reject llama-server 'org/repo:../../evil.gguf'
 spec_reject mlx-server '../../org/repo'
 
-# --socket runs unsandboxed with full privileges on a caller-typed path, so
+# a .sock --host runs unsandboxed with full privileges on a caller-typed path, so
 # it must never unlink anything but a stale socket of ours.
 printf 'important\n' >"$SCRATCH/notasocket.sock"
-if "$SANDBOX" llama-server --model "$TEST_GGUF_MODEL" --socket "$SCRATCH/notasocket.sock" \
+if "$SANDBOX" llama-server --model "$TEST_GGUF_MODEL" --host "$SCRATCH/notasocket.sock" \
   >"$WORK/sock-file.log" 2>&1; then
   fail "socket: an existing non-socket file is refused" "$WORK/sock-file.log"
 elif grep -q 'exists and is not a socket' "$WORK/sock-file.log" &&
