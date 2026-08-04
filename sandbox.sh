@@ -137,18 +137,22 @@ abspath() {
 }
 
 # Locate the executable for a command. $1 is an explicit override (from the
-# env var named $3) and wins over the PATH lookup of $2. Prints an absolute
-# path.
+# env var named $3) and wins over the PATH lookup of $2. Prints an absolute,
+# symlink-free path: the profiles grant exec on a literal path and seatbelt
+# matches the resolved one, so a symlinked entry point (Homebrew keeps
+# bin/* as links into Cellar, nix links python3 → python3.13) would be
+# denied if the link path were granted instead.
 resolve_binary() {
-  local override="$1" name="$2" var="$3"
+  local override="$1" name="$2" var="$3" bin
 
   if [[ -n "$override" ]]; then
     [[ -x "$override" ]] || die "$name not executable: $override (from \$$var)"
-    abspath "$override"
-    return
+    bin="$(abspath "$override")"
+  else
+    bin="$(command -v "$name")" ||
+      die "$name not found on PATH. Install it or set $var."
   fi
-  command -v "$name" ||
-    die "$name not found on PATH. Install it or set $var."
+  realpath "$bin" 2>/dev/null || printf '%s' "$bin"
 }
 
 # Package store prefix of a binary: the subtree the profiles grant read +
@@ -174,6 +178,44 @@ resolve_darwin_dirs() {
     die "cannot resolve DARWIN_USER_TEMP_DIR"
   DARWIN_USER_CACHE_DIR="$(realpath "$(getconf DARWIN_USER_CACHE_DIR)" 2>/dev/null)" ||
     die "cannot resolve DARWIN_USER_CACHE_DIR"
+}
+
+# The interpreter named by $1's shebang, resolved and without its
+# arguments. Empty when $1 is a real binary (or unreadable).
+shebang_interp() {
+  local line
+  IFS= read -r line <"$1" 2>/dev/null || return 0
+  [[ "$line" == '#!'* ]] || return 0
+  line="${line#\#!}"
+  line="${line#"${line%%[![:space:]]*}"}" # leading space after #!
+  line="${line%%[[:space:]]*}"
+  # Resolved: seatbelt matches the real path (nix links python3 → python3.13).
+  realpath "$line" 2>/dev/null || printf '%s' "$line"
+}
+
+# Every file the mlx entry point must exec, so the profile can name them
+# instead of allowing the whole package store (which under Homebrew is
+# every binary in /opt/homebrew). Two shapes are covered:
+#   nix:      bin/x (bash wrapper) → bash → bin/.x-wrapped → python3
+#   homebrew: bin/x (python script)            → python3
+# Sets MLX_INTERP, MLX_WRAPPED and MLX_WRAPPED_INTERP, each /dev/null when
+# that link is absent — sandbox-exec errors on a parameter referenced but
+# never passed, and /dev/null cannot be exec'd. Nothing deeper is needed:
+# the profile denies process-fork, so the server cannot spawn anything
+# beyond replacing itself along this chain.
+resolve_mlx_exec() {
+  local bin="$1"
+  MLX_INTERP="$(shebang_interp "$bin")"
+  MLX_WRAPPED="${bin%/*}/.${bin##*/}-wrapped"
+  MLX_WRAPPED_INTERP=""
+  if [[ -x "$MLX_WRAPPED" ]]; then
+    MLX_WRAPPED_INTERP="$(shebang_interp "$MLX_WRAPPED")"
+  else
+    MLX_WRAPPED=""
+  fi
+  : "${MLX_INTERP:=/dev/null}"
+  : "${MLX_WRAPPED:=/dev/null}"
+  : "${MLX_WRAPPED_INTERP:=/dev/null}"
 }
 
 # The controlling terminal the client profiles grant read/write/ioctl on.
@@ -763,6 +805,7 @@ cmd_mlx() {
   pkg_store="$(pkg_store_for "$mlx_server")"
   resolve_ca_file
   resolve_darwin_dirs
+  resolve_mlx_exec "$mlx_server"
 
   printf 'Starting sandboxed %s:\n' "${mlx_server##*/}"
   info "binary:" "$mlx_server"
@@ -799,6 +842,10 @@ cmd_mlx() {
     -D DARWIN_USER_TEMP_DIR="$DARWIN_USER_TEMP_DIR" \
     -D DARWIN_USER_CACHE_DIR="$DARWIN_USER_CACHE_DIR" \
     -D CA_FILE="$CA_FILE" \
+    -D MLX_SERVER="$mlx_server" \
+    -D MLX_INTERP="$MLX_INTERP" \
+    -D MLX_WRAPPED="$MLX_WRAPPED" \
+    -D MLX_WRAPPED_INTERP="$MLX_WRAPPED_INTERP" \
     -D MODEL_DIR="$model_dir" \
     -D CACHE_DIR="$CACHE_DIR" \
     -D TMPDIR="$TMPDIR" \

@@ -9,10 +9,16 @@
 
 ;; ── Process ──────────────────────────────────────────────
 ;; Unlike llama-server (a single binary pinned by literal path), the
-;; server is a Python entry-point script whose shebang execs the
-;; interpreter out of the package store, so exec is allowed store-wide.
+;; server is a script: it execs its shebang interpreter, and a nix build
+;; adds a wrapper indirection on top. sandbox.sh walks that chain (see
+;; resolve_mlx_exec) so the grant names the two-to-four files involved
+;; rather than every executable in the package store. Unused links are
+;; passed as /dev/null, which cannot be exec'd.
 (allow process-exec
-  (subpath (param "PKG_STORE")))
+  (literal (param "MLX_SERVER"))
+  (literal (param "MLX_INTERP"))
+  (literal (param "MLX_WRAPPED"))
+  (literal (param "MLX_WRAPPED_INTERP")))
 
 ;; ── Sysctl (CPython/its deps probe these on Apple Silicon) ─
 (allow sysctl-read
