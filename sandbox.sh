@@ -22,6 +22,7 @@ set -euo pipefail
 shopt -s extglob
 
 SCRIPT_DIR="$(CDPATH='' cd -P -- "$(dirname -- "$0")" && pwd)"
+PROFILES_DIR="$SCRIPT_DIR/profiles"
 
 # Program name shown in usage/messages. The Nix wrapper sets SANDBOXED_AI_PROG
 # so it reads `sandboxed-ai`; run directly it falls back to the script basename.
@@ -47,7 +48,7 @@ TMPDIR="$STATE_DIR/tmp"
 # relocates them. Give it a real path, not a symlink: seatbelt matches
 # resolved paths, so a link would not match the granted MODEL_DIR.
 MODELS_DIR="${SANDBOXED_AI_MODELS:-$STATE_DIR/models}"
-readonly SCRIPT_DIR PROG PORT STATE_DIR CACHE_DIR MODELS_DIR
+readonly SCRIPT_DIR PROFILES_DIR PROG PORT STATE_DIR CACHE_DIR MODELS_DIR
 
 # ── Output & usage ────────────────────────────────────────
 die() {
@@ -199,7 +200,7 @@ resolve_ca_file() {
 # the other's surface. The path must end in .sock (all three servers key
 # UNIX-socket mode off that suffix on --host) and is normalized here.
 select_net() {
-  NET_SB="$SCRIPT_DIR/net-tcp.sb"
+  NET_SB="$PROFILES_DIR/net-tcp.sb"
   NET_TARGET="*:$PORT"
 
   local sock="${1:-}"
@@ -208,7 +209,7 @@ select_net() {
   [[ "$sock" == /* ]] || sock="$PWD/$sock"
   mkdir -p "${sock%/*}" # the profile grants only the socket path itself
   rm -f "$sock"         # a stale socket file would make bind() fail
-  NET_SB="$SCRIPT_DIR/net-unix.sb"
+  NET_SB="$PROFILES_DIR/net-unix.sb"
   NET_TARGET="$sock"
 }
 
@@ -561,8 +562,8 @@ seed_hf_cache() {
 # getcwd() must resolve) and ends in `exec sandbox-exec` with every grant
 # spelled out at the call site — keep it that way: the full parameter set of
 # every sandbox must stay auditable where it is used. The -D blocks share a
-# fixed order: COMMON_SB, NET_*, PKG_STORE, DARWIN_USER_*, per-command
-# params, -f, argv.
+# fixed order: COMMON_SB, SERVER_SB/CLIENT_SB, NET_*, PKG_STORE,
+# DARWIN_USER_*, per-command params, -f, argv.
 
 # die unless the option $1 is followed by a value.
 need_arg() { [[ $# -ge 2 ]] || die "$1 requires an argument"; }
@@ -635,7 +636,8 @@ cmd_llama() {
   # MMPROJ_DIR falls back to MODEL_DIR when no projector is given:
   # sandbox-exec errors out on profile parameters that were never passed.
   exec sandbox-exec \
-    -D COMMON_SB="$SCRIPT_DIR/common.sb" \
+    -D COMMON_SB="$PROFILES_DIR/common.sb" \
+    -D SERVER_SB="$PROFILES_DIR/server.sb" \
     -D NET_SB="$NET_SB" \
     -D NET_TARGET="$NET_TARGET" \
     -D PKG_STORE="$pkg_store" \
@@ -646,7 +648,7 @@ cmd_llama() {
     -D MMPROJ_DIR="${mmproj_dir:-$model_dir}" \
     -D CACHE_DIR="$CACHE_DIR" \
     -D TMPDIR="$TMPDIR" \
-    -f "$SCRIPT_DIR/llama-server.sb" \
+    -f "$PROFILES_DIR/llama-server.sb" \
     "$llama_server" "${server_args[@]}" "${extra_args[@]}"
 }
 
@@ -744,7 +746,8 @@ cmd_mlx() {
   cd "$CACHE_DIR"
 
   exec sandbox-exec \
-    -D COMMON_SB="$SCRIPT_DIR/common.sb" \
+    -D COMMON_SB="$PROFILES_DIR/common.sb" \
+    -D SERVER_SB="$PROFILES_DIR/server.sb" \
     -D NET_SB="$NET_SB" \
     -D NET_TARGET="$NET_TARGET" \
     -D PKG_STORE="$pkg_store" \
@@ -754,7 +757,7 @@ cmd_mlx() {
     -D MODEL_DIR="$model_dir" \
     -D CACHE_DIR="$CACHE_DIR" \
     -D TMPDIR="$TMPDIR" \
-    -f "$SCRIPT_DIR/mlx-server.sb" \
+    -f "$PROFILES_DIR/mlx-server.sb" \
     "$mlx_server" "${server_args[@]}" "${extra_args[@]}"
 }
 
@@ -806,7 +809,8 @@ cmd_pi() {
   cd "$WORKSPACE"
 
   exec sandbox-exec \
-    -D COMMON_SB="$SCRIPT_DIR/common.sb" \
+    -D COMMON_SB="$PROFILES_DIR/common.sb" \
+    -D CLIENT_SB="$PROFILES_DIR/client.sb" \
     -D PKG_STORE="$pkg_store" \
     -D DARWIN_USER_TEMP_DIR="$DARWIN_USER_TEMP_DIR" \
     -D DARWIN_USER_CACHE_DIR="$DARWIN_USER_CACHE_DIR" \
@@ -815,7 +819,7 @@ cmd_pi() {
     -D PI_LLAMA_DIR="$PI_LLAMA_DIR" \
     -D TMPDIR="$TMPDIR" \
     -D NET_ADDR="localhost:$PORT" \
-    -f "$SCRIPT_DIR/pi.sb" \
+    -f "$PROFILES_DIR/pi.sb" \
     "$pi_bin" -e "$plugin" "${ARGS[@]}"
 }
 
@@ -841,13 +845,15 @@ cmd_llm() {
   cd "$LLM_USER_PATH"
 
   exec sandbox-exec \
-    -D COMMON_SB="$SCRIPT_DIR/common.sb" \
+    -D COMMON_SB="$PROFILES_DIR/common.sb" \
+    -D CLIENT_SB="$PROFILES_DIR/client.sb" \
     -D PKG_STORE="$pkg_store" \
     -D DARWIN_USER_TEMP_DIR="$DARWIN_USER_TEMP_DIR" \
     -D DARWIN_USER_CACHE_DIR="$DARWIN_USER_CACHE_DIR" \
     -D LLM_USER_PATH="$LLM_USER_PATH" \
     -D TMPDIR="$TMPDIR" \
-    -f "$SCRIPT_DIR/llm.sb" \
+    -D NET_ADDR="localhost:$PORT" \
+    -f "$PROFILES_DIR/llm.sb" \
     "$llm_bin" "$@"
 }
 

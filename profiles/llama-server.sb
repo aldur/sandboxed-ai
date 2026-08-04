@@ -1,0 +1,18 @@
+; vim:ft=scheme
+(version 1)
+(deny default)
+
+;; llama-server sandbox — everything but the binary comes from server.sb
+(import (param "COMMON_SB"))
+(import (param "SERVER_SB"))
+
+;; ── Process: the single pinned binary ────────────────────
+(allow process-exec
+  (literal (param "LLAMA_SERVER")))
+
+;; ── Multimodal projector (read-only) ─────────────────────
+;; The model itself is covered by server.sb's MODEL_DIR rule. MMPROJ_DIR
+;; falls back to MODEL_DIR when no projector is in play — sandbox-exec
+;; errors out on parameters referenced but not passed.
+(allow file-read*
+  (subpath (param "MMPROJ_DIR")))

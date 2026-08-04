@@ -2,24 +2,18 @@
 (version 1)
 (deny default)
 
-;; pi (pi-coding-agent) sandbox
+;; pi (pi-coding-agent) sandbox — shells/TTY/server-dialing come from
+;; client.sb, this file adds pi's state, the workspace, and what a Node
+;; TUI needs on top.
 (import (param "COMMON_SB"))
+(import (param "CLIENT_SB"))
 
 ;; ── Process ──────────────────────────────────────────────
-(allow process-exec
-  (subpath (param "PKG_STORE"))
-  (literal "/usr/bin/env")
-  (literal "/bin/bash")
-  (literal "/bin/zsh")
-  (literal "/bin/sh"))
-
-(allow process-fork)
 (allow process-info-setcontrol)
 
 ;; ── Network config + TLS ─────────────────────────────────
 (allow file-read*
   (literal "/private/etc/ssl/cert.pem")
-  (literal "/private/etc/hosts")
   (literal "/Library/Preferences/com.apple.networkd.plist"))
 
 ;; ── pi state (~/.pi etc.; HOME points here) + scratch ────
@@ -57,12 +51,6 @@
 (allow sysctl-read sysctl-write
   (sysctl-name "kern.maxfilesperproc"))
 
-;; ── TTY (TUI rawmode) ────────────────────────────────────
-(allow file-read* file-write* file-ioctl
-  (subpath "/dev/tty")
-  (subpath "/dev/pty")
-  (regex #"^/dev/ttys[0-9]+$"))
-
 ;; ── Workspace: full read + write ─────────────────────────
 (allow file-read* file-write*
   (subpath (param "WORKSPACE")))
@@ -74,10 +62,6 @@
 (allow ipc-posix-sem-open
        ipc-posix-sem-post
        ipc-posix-sem-wait)
-
-;; ── Network: localhost llama-server only ──────────────────
-(allow network-outbound
-  (remote tcp (param "NET_ADDR")))
 
 ;; ── System libs (locale + timezone + devices) ────────────
 (allow file-read*

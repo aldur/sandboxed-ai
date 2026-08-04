@@ -145,11 +145,11 @@
         src = pkgs.lib.fileset.toSource {
           root = ./.;
           # sandbox.sh plus every seatbelt profile — one filter, so a new
-          # profile snippet is picked up here and by installPhase's *.sb glob
+          # profile snippet is picked up here and by installPhase's glob
           # without touching this file.
           fileset = pkgs.lib.fileset.unions [
             ./sandbox.sh
-            (pkgs.lib.fileset.fileFilter (f: f.hasExt "sb") ./.)
+            (pkgs.lib.fileset.fileFilter (f: f.hasExt "sb") ./profiles)
           ];
         };
 
@@ -161,7 +161,7 @@
           runHook preInstall
           libexec=$out/libexec/sandboxed-ai
           install -Dm755 sandbox.sh $libexec/sandbox.sh
-          install -m444 *.sb $libexec/
+          install -Dm444 -t $libexec/profiles profiles/*.sb
           makeWrapper $libexec/sandbox.sh $out/bin/sandboxed-ai \
             --set SANDBOXED_AI_PROG sandboxed-ai \
             --set PI_LLAMA_DIR ${pi-llama} \

@@ -1,17 +1,12 @@
 ; vim:ft=scheme
-(version 1)
-(deny default)
-
-;; mlx_lm.server sandbox — Python + MLX (Metal), modeled on llama-server.sb
-(import (param "COMMON_SB"))
+;; server.sb — shared rules for the model servers, imported by
+;; llama-server.sb and mlx-server.sb after common.sb: Metal/ANE GPU access,
+;; model weights and caches, and the serving network personality. Each
+;; server adds its own executable rule.
 
 ;; ── Process ──────────────────────────────────────────────
-;; Unlike llama-server (a single binary pinned by literal path),
-;; mlx_lm.server is a Python entry-point script whose shebang execs the
-;; interpreter out of the package store, so exec is allowed store-wide.
+;; Metal shader compiler (metalfe) lives in system frameworks
 (allow process-exec
-  (subpath (param "PKG_STORE"))
-  ;; Metal shader compiler (metalfe) lives in system frameworks
   (subpath "/System/Library/Frameworks/Metal.framework")
   (subpath "/System/Library/PrivateFrameworks"))
 
@@ -46,11 +41,7 @@
   (sysctl-name "hw.physicalcpu")
   (sysctl-name-prefix "hw.optional.")
   (sysctl-name "hw.nperflevels")
-  (sysctl-name-prefix "hw.perflevel")
-  ;; CPython/its deps probe these on Apple Silicon
-  (sysctl-name "hw.machine")
-  (sysctl-name "kern.osproductversion")
-  (sysctl-name "sysctl.proc_translated"))
+  (sysctl-name-prefix "hw.perflevel"))
 
 ;; ── Filesystem ───────────────────────────────────────────
 ;; GPU shader bundles
@@ -58,25 +49,11 @@
   (subpath "/Library/GPUBundles")
   (subpath "/System/Library/GPUBundles"))
 
-;; python's platform.mac_ver() reads the version plist
-(allow file-read*
-  (literal "/System/Library/CoreServices/SystemVersion.plist"))
-
-;; Python's http.server calls getfqdn() at bind; with the hosts file
-;; readable, libinfo resolves 127.0.0.1 → localhost from it and never
-;; falls through to mDNSResponder (whose socket the deny below kills on).
-(allow file-read*
-  (literal "/private/etc/hosts"))
-
-;; TLS trust store — the CA bundle certifi opens
-(allow file-read*
-  (literal (param "CA_FILE")))
-
 ;; Model weights (read-only)
 (allow file-read*
   (subpath (param "MODEL_DIR")))
 
-;; Metal shader / PSO cache, HF hub cache (HOME is rooted here) + local temp
+;; Metal shader / PSO cache + local temp
 (allow file-read* file-write* file-lock
   (subpath (param "CACHE_DIR"))
   (subpath (param "TMPDIR")))
@@ -102,15 +79,8 @@
 
 ;; ── Network ──────────────────────────────────────────────
 ;; Serving personality chosen by sandbox.sh — see net-tcp.sb / net-unix.sb.
-;; Outbound denied: the model is fully local and HF_HUB_OFFLINE=1 is set,
-;; so the server has no reason to dial out.
+;; Outbound denied: the model is fully local, so the server has no reason
+;; to dial out.
 (import (param "NET_SB"))
 
 (deny network-outbound (with send-signal SIGKILL))
-
-;; Safety net for any lookup the hosts file doesn't answer: libinfo then
-;; dials mDNSResponder over its UNIX socket. Still denied — but without
-;; the SIGKILL above, so the resolver gets EPERM and fails gracefully
-;; instead of the process dying mid-lookup. Must stay after the blanket
-;; deny: the last matching rule wins.
-(deny network-outbound (literal "/private/var/run/mDNSResponder"))

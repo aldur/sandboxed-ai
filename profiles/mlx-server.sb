@@ -1,0 +1,44 @@
+; vim:ft=scheme
+(version 1)
+(deny default)
+
+;; mlx server sandbox — Python + MLX (Metal); the GPU/network surface
+;; comes from server.sb, this file adds what CPython needs on top.
+(import (param "COMMON_SB"))
+(import (param "SERVER_SB"))
+
+;; ── Process ──────────────────────────────────────────────
+;; Unlike llama-server (a single binary pinned by literal path), the
+;; server is a Python entry-point script whose shebang execs the
+;; interpreter out of the package store, so exec is allowed store-wide.
+(allow process-exec
+  (subpath (param "PKG_STORE")))
+
+;; ── Sysctl (CPython/its deps probe these on Apple Silicon) ─
+(allow sysctl-read
+  (sysctl-name "hw.machine")
+  (sysctl-name "kern.osproductversion")
+  (sysctl-name "sysctl.proc_translated"))
+
+;; ── Filesystem ───────────────────────────────────────────
+;; python's platform.mac_ver() reads the version plist
+(allow file-read*
+  (literal "/System/Library/CoreServices/SystemVersion.plist"))
+
+;; Python's http.server calls getfqdn() at bind; with the hosts file
+;; readable, libinfo resolves 127.0.0.1 → localhost from it and never
+;; falls through to mDNSResponder (whose socket the deny below kills on).
+(allow file-read*
+  (literal "/private/etc/hosts"))
+
+;; TLS trust store — the CA bundle certifi opens
+(allow file-read*
+  (literal (param "CA_FILE")))
+
+;; ── Network ──────────────────────────────────────────────
+;; Safety net for any lookup the hosts file doesn't answer: libinfo then
+;; dials mDNSResponder over its UNIX socket. Still denied — but without
+;; server.sb's SIGKILL, so the resolver gets EPERM and fails gracefully
+;; instead of the process dying mid-lookup. Must stay after that import:
+;; the last matching rule wins.
+(deny network-outbound (literal "/private/var/run/mDNSResponder"))

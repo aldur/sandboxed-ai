@@ -100,7 +100,8 @@ PKG_STORE="${TEST_PKG_STORE:-/nix}"
 pi_sh() {
   mkdir -p "$SCRATCH/ws" "$STATE_DIR/pi" "$STATE_DIR/tmp"
   sandbox-exec \
-    -D COMMON_SB="$ROOT/common.sb" \
+    -D COMMON_SB="$ROOT/profiles/common.sb" \
+    -D CLIENT_SB="$ROOT/profiles/client.sb" \
     -D PKG_STORE="$PKG_STORE" \
     -D DARWIN_USER_TEMP_DIR="$DARWIN_TMP" \
     -D DARWIN_USER_CACHE_DIR="$DARWIN_CACHE" \
@@ -109,7 +110,7 @@ pi_sh() {
     -D PI_LLAMA_DIR="$STATE_DIR/pi" \
     -D TMPDIR="$STATE_DIR/tmp" \
     -D NET_ADDR="localhost:$PORT" \
-    -f "$ROOT/pi.sb" /bin/sh -c "$1" 2>/dev/null
+    -f "$ROOT/profiles/pi.sb" /bin/sh -c "$1" 2>/dev/null
 }
 
 # ── Preflight ─────────────────────────────────────────────
@@ -265,8 +266,9 @@ PY="$(command -v python3 || true)"
 if [[ "$PY" == "$PKG_STORE"/* ]]; then
   mkdir -p "$STATE_DIR/cache" "$STATE_DIR/tmp"
   if (cd "$STATE_DIR/cache" && sandbox-exec \
-    -D COMMON_SB="$ROOT/common.sb" \
-    -D NET_SB="$ROOT/net-tcp.sb" \
+    -D COMMON_SB="$ROOT/profiles/common.sb" \
+    -D SERVER_SB="$ROOT/profiles/server.sb" \
+    -D NET_SB="$ROOT/profiles/net-tcp.sb" \
     -D NET_TARGET="*:$PORT" \
     -D PKG_STORE="$PKG_STORE" \
     -D DARWIN_USER_TEMP_DIR="$DARWIN_TMP" \
@@ -275,7 +277,7 @@ if [[ "$PY" == "$PKG_STORE"/* ]]; then
     -D MODEL_DIR="$STATE_DIR/models" \
     -D CACHE_DIR="$STATE_DIR/cache" \
     -D TMPDIR="$STATE_DIR/tmp" \
-    -f "$ROOT/mlx-server.sb" \
+    -f "$ROOT/profiles/mlx-server.sb" \
     "$PY" -I -c 'import socket; socket.getfqdn("127.0.0.1")' 2>/dev/null); then
     ok "probe: getfqdn survives under mlx-server.sb"
   else

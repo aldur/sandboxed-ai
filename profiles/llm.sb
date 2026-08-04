@@ -2,17 +2,10 @@
 (version 1)
 (deny default)
 
-;; llm CLI sandbox
+;; llm CLI sandbox — shells/TTY/server-dialing come from client.sb, this
+;; file adds llm's state and Python's TLS/config probing on top.
 (import (param "COMMON_SB"))
-
-;; ── Process ──────────────────────────────────────────────
-(allow process-exec
-  (subpath (param "PKG_STORE"))
-  (literal "/usr/bin/env")
-  (literal "/bin/bash")
-  (literal "/bin/sh"))
-
-(allow process-fork)
+(import (param "CLIENT_SB"))
 
 ;; ── LLM state ──────────────────────────────────────────
 (allow file-read* file-write*
@@ -27,18 +20,7 @@
   (subpath "/etc")
   (subpath "/private/etc"))
 (allow file-read*
-  (literal "/private/etc/hosts")
   (subpath "/private/etc/ssl")
   (subpath "/etc/ssl"))
 (allow mach-lookup
   (global-name "com.apple.SystemConfiguration.configd"))
-
-;; ── Network: localhost llama-server only ──────────────────
-(allow network-outbound
-  (remote tcp "localhost:8080"))
-
-;; ── TTY (interactive prompts) ────────────────────────────
-(allow file-read* file-write* file-ioctl
-  (subpath "/dev/tty")
-  (subpath "/dev/pty")
-  (regex #"^/dev/ttys[0-9]+$"))
