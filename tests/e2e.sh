@@ -463,8 +463,8 @@ OTHER_BIN="$(realpath "$(command -v ls)" 2>/dev/null || true)"
 if [[ -n "$MLX_BIN" && "$OTHER_BIN" == "$PKG_STORE"/* ]]; then
   mlx_wrapped="${MLX_BIN%/*}/.${MLX_BIN##*/}-wrapped"
   [[ -x "$mlx_wrapped" ]] || mlx_wrapped=/dev/null
-  mkdir -p "$STATE_DIR/cache" "$STATE_DIR/tmp/mlx-server"
-  if (cd "$STATE_DIR/cache" && sandbox-exec \
+  mkdir -p "$STATE_DIR/cache/mlx-server" "$STATE_DIR/tmp/mlx-server"
+  if (cd "$STATE_DIR/cache/mlx-server" && sandbox-exec \
     -D COMMON_SB="$ROOT/profiles/common.sb" \
     -D SERVER_SB="$ROOT/profiles/server.sb" \
     -D NET_SB="$ROOT/profiles/net-tcp.sb" \
@@ -479,7 +479,7 @@ if [[ -n "$MLX_BIN" && "$OTHER_BIN" == "$PKG_STORE"/* ]]; then
     -D MLX_WRAPPED="$mlx_wrapped" \
     -D MLX_WRAPPED_INTERP=/dev/null \
     -D MODEL_DIR="$STATE_DIR/models" \
-    -D CACHE_DIR="$STATE_DIR/cache" \
+    -D CACHE_DIR="$STATE_DIR/cache/mlx-server" \
     -D TMPDIR="$STATE_DIR/tmp/mlx-server" \
     -f "$ROOT/profiles/mlx-server.sb" \
     "$OTHER_BIN" >/dev/null 2>&1); then
@@ -491,13 +491,13 @@ else
   skip "probe: mlx sandbox refuses unrelated store binaries" "mlx_lm.server or a $PKG_STORE binary unavailable"
 fi
 
-# ── Regression: getfqdn must not SIGKILL the mlx sandbox ──
-# Python's http.server resolves the bind address at startup; the reverse
-# lookup once escalated into mDNSResponder and tripped the fatal
-# network-outbound deny (fixed by the hosts-file grant + plain deny).
+# ── The servers do not share cache state either ───────────
+# Each server gets its own cache dir (Metal PSO cache, HF hub cache). One
+# shared dir would let either rewrite what the other loads on its next
+# start, in a process holding the GPU and the weights.
 if [[ -n "$PY" ]]; then
-  mkdir -p "$STATE_DIR/cache" "$STATE_DIR/tmp/mlx-server"
-  if (cd "$STATE_DIR/cache" && sandbox-exec \
+  mkdir -p "$STATE_DIR/cache/mlx-server" "$STATE_DIR/cache/llama-server" "$STATE_DIR/tmp/mlx-server"
+  if (cd "$STATE_DIR/cache/mlx-server" && sandbox-exec \
     -D COMMON_SB="$ROOT/profiles/common.sb" \
     -D SERVER_SB="$ROOT/profiles/server.sb" \
     -D NET_SB="$ROOT/profiles/net-tcp.sb" \
@@ -512,7 +512,41 @@ if [[ -n "$PY" ]]; then
     -D MLX_WRAPPED=/dev/null \
     -D MLX_WRAPPED_INTERP=/dev/null \
     -D MODEL_DIR="$STATE_DIR/models" \
-    -D CACHE_DIR="$STATE_DIR/cache" \
+    -D CACHE_DIR="$STATE_DIR/cache/mlx-server" \
+    -D TMPDIR="$STATE_DIR/tmp/mlx-server" \
+    -f "$ROOT/profiles/mlx-server.sb" \
+    "$PY" -I -c "open('$STATE_DIR/cache/llama-server/probe','w').write('x')" 2>/dev/null); then
+    rm -f "$STATE_DIR/cache/llama-server/probe"
+    fail "probe: one server cannot write the other's cache"
+  else
+    ok "probe: one server cannot write the other's cache"
+  fi
+else
+  skip "probe: one server cannot write the other's cache" "no python3 in $PKG_STORE"
+fi
+
+# ── Regression: getfqdn must not SIGKILL the mlx sandbox ──
+# Python's http.server resolves the bind address at startup; the reverse
+# lookup once escalated into mDNSResponder and tripped the fatal
+# network-outbound deny (fixed by the hosts-file grant + plain deny).
+if [[ -n "$PY" ]]; then
+  mkdir -p "$STATE_DIR/cache/mlx-server" "$STATE_DIR/tmp/mlx-server"
+  if (cd "$STATE_DIR/cache/mlx-server" && sandbox-exec \
+    -D COMMON_SB="$ROOT/profiles/common.sb" \
+    -D SERVER_SB="$ROOT/profiles/server.sb" \
+    -D NET_SB="$ROOT/profiles/net-tcp.sb" \
+    -D NET_TARGET="*:$PORT" \
+    -D PKG_STORE="$PKG_STORE" \
+    -D DARWIN_USER_TEMP_DIR="$DARWIN_TMP" \
+    -D DARWIN_METAL_CACHE="$DARWIN_CACHE/com.apple.metal" \
+    -D DARWIN_METALFE_CACHE="$DARWIN_CACHE/com.apple.metalfe" \
+    -D CA_FILE=/dev/null \
+    -D MLX_SERVER="$PY" \
+    -D MLX_INTERP=/dev/null \
+    -D MLX_WRAPPED=/dev/null \
+    -D MLX_WRAPPED_INTERP=/dev/null \
+    -D MODEL_DIR="$STATE_DIR/models" \
+    -D CACHE_DIR="$STATE_DIR/cache/mlx-server" \
     -D TMPDIR="$STATE_DIR/tmp/mlx-server" \
     -f "$ROOT/profiles/mlx-server.sb" \
     "$PY" -I -c 'import socket; socket.getfqdn("127.0.0.1")' 2>/dev/null); then

@@ -46,6 +46,10 @@ PROG="${SANDBOXED_AI_PROG:-${0##*/}}"
 # stays unexported; each subcommand exports it for its sandboxed process.)
 PORT=8080
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/sandboxed-ai"
+# Parent of the per-server cache dirs (Metal PSO cache, HF hub cache);
+# each server appends its own name. Sharing one would let either server
+# rewrite what the other loads on its next start — the same channel the
+# per-subcommand scratch dirs below close, one trust level up.
 CACHE_DIR="$STATE_DIR/cache"
 # Parent of the per-subcommand scratch dirs; each cmd_* appends its own name
 # before exporting it. One shared scratch would be a read-write channel
@@ -65,7 +69,7 @@ MODELS_DIR="${SANDBOXED_AI_MODELS:-$STATE_DIR/models}"
 # "Starting sandboxed …". The model binaries go through resolve_binary for
 # the same reason; this one cannot afford even that much indirection.
 SANDBOX_EXEC=/usr/bin/sandbox-exec
-readonly SCRIPT_DIR PROFILES_DIR PROG PORT STATE_DIR CACHE_DIR MODELS_DIR SANDBOX_EXEC
+readonly SCRIPT_DIR PROFILES_DIR PROG PORT STATE_DIR MODELS_DIR SANDBOX_EXEC
 
 # ── Output & usage ────────────────────────────────────────
 die() {
@@ -827,6 +831,7 @@ cmd_llama() {
   fi
 
   TMPDIR="$TMPDIR/llama-server"
+  CACHE_DIR="$CACHE_DIR/llama-server"
   mkdir -p "$CACHE_DIR" "$TMPDIR"
   export TMPDIR
   # Root ~-relative lookups inside the writable cache: the real HOME is
@@ -901,6 +906,7 @@ cmd_mlx() {
   model_dir="$(resolve_mlx_model "$MODEL")"
 
   TMPDIR="$TMPDIR/mlx-server"
+  CACHE_DIR="$CACHE_DIR/mlx-server"
   mkdir -p "$CACHE_DIR" "$TMPDIR"
   export TMPDIR
   # Root ~-relative state (HF hub cache scans etc.) inside the writable
@@ -1007,7 +1013,7 @@ cmd_pi() {
   # keep writable state local (and out of the read-only store / real HOME).
   local pi_home="$STATE_DIR/pi"
   TMPDIR="$TMPDIR/pi"
-  mkdir -p "$pi_home" "$CACHE_DIR" "$TMPDIR"
+  mkdir -p "$pi_home" "$TMPDIR"
   export HOME="$pi_home"
   export TMPDIR
 
