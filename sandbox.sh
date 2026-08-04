@@ -770,8 +770,32 @@ sandbox_env() {
   return 0
 }
 
+# Canonical form of $1 for comparison, unresolved if it does not exist yet.
+canon() { realpath "$1" 2>/dev/null || printf '%s' "${1%/}"; }
+
+# True when $1 and $2 are the same directory or one contains the other.
+# Both must already be canonical; the trailing slashes stop /foo/bar from
+# looking like it sits inside /foo/ba.
+paths_overlap() {
+  local a="${1%/}/" b="${2%/}/"
+  [[ "$a" == "$b"* || "$b" == "$a"* ]]
+}
+
 # Consume leading -w/--workspace DIR (last wins); sets WORKSPACE and ARGS
 # (the remaining args, passed through to the wrapped tool).
+#
+# The workspace is the one path this script takes from the caller, and the
+# agent gets read+write over all of it — so it is canonicalized like every
+# other path (seatbelt matches resolved paths, so a relative or symlinked
+# -w would grant nothing and leave pi running in a directory it cannot
+# touch) and then checked for what it must not be:
+#   /            — read/write over the whole filesystem
+#   $HOME        — and note STATE_DIR lives under it by default, so `cd ~ &&
+#                  … pi` would otherwise hand the agent the model cache,
+#                  the digest sidecars and the .download-complete markers
+#                  that resolve_mlx_model trusts on the next start
+#   an ancestor or descendant of STATE_DIR / MODELS_DIR — same reasoning,
+#                  for a relocated state or models dir
 parse_workspace() {
   WORKSPACE="$PWD"
   while [[ "${1:-}" == "-w" || "${1:-}" == "--workspace" ]]; do
@@ -780,6 +804,22 @@ parse_workspace() {
     shift 2
   done
   ARGS=("$@")
+
+  [[ -d "$WORKSPACE" ]] || die "workspace is not a directory: $WORKSPACE"
+  WORKSPACE="$(realpath "$WORKSPACE")" ||
+    die "cannot resolve workspace: $WORKSPACE"
+
+  [[ "$WORKSPACE" != "/" ]] ||
+    die "refusing to run with / as the workspace — use -w to pick a project directory"
+  [[ "$WORKSPACE" != "$(canon "$HOME")" ]] ||
+    die "refusing to run with your home directory as the workspace — use -w to pick a project directory"
+
+  local guarded name
+  for name in STATE_DIR MODELS_DIR; do
+    guarded="$(canon "${!name}")"
+    ! paths_overlap "$WORKSPACE" "$guarded" ||
+      die "workspace overlaps $name ($guarded): the agent would be able to rewrite the model cache it is served from — use -w to pick a project directory"
+  done
 }
 
 cmd_llama() {

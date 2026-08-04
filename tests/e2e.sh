@@ -384,6 +384,39 @@ else
   skip "startup: sandbox-exec is not taken from PATH" "llm not on PATH"
 fi
 
+# The workspace is the one caller-supplied path the agent gets read+write
+# over, so it is canonicalized and refused when it would contain the state
+# it is served from. `cd ~ && … pi` is the natural invocation that used to
+# hand the agent the model cache, digest sidecars and completion markers.
+ws_reject() { # $1 label, rest: sandbox.sh pi args
+  local label="$1"
+  shift
+  if "$SANDBOX" pi "$@" -p hi >"$WORK/ws.log" 2>&1; then
+    fail "workspace: $label is refused" "$WORK/ws.log"
+  elif grep -q '^error: refusing to run\|^error: workspace overlaps' "$WORK/ws.log"; then
+    ok "workspace: $label is refused"
+  else
+    fail "workspace: $label is refused (wrong error)" "$WORK/ws.log"
+  fi
+}
+ws_reject "/" -w /
+ws_reject "\$HOME" -w "$HOME"
+ws_reject "the state dir" -w "$STATE_DIR"
+ws_reject "an ancestor of the state dir" -w "$(dirname "$STATE_DIR")"
+
+# ...and a real directory reached through a symlink still resolves, rather
+# than granting a path seatbelt will never match.
+mkdir -p "$SCRATCH/realws"
+ln -sfn "$SCRATCH/realws" "$SCRATCH/linkws"
+# Asserted on the startup banner, not the exit status: no server is running
+# at this point, so pi itself exits non-zero either way.
+"$SANDBOX" pi -w "$SCRATCH/linkws" -p hi >"$WORK/ws-link.log" 2>&1
+if grep -q "workspace: *$SCRATCH/realws" "$WORK/ws-link.log"; then
+  ok "workspace: a symlinked workspace is canonicalized"
+else
+  fail "workspace: a symlinked workspace is canonicalized" "$WORK/ws-link.log"
+fi
+
 # A repo with no GGUF listing must reach its error message, not exit blank.
 "$SANDBOX" llama-server --model no-such-org/no-such-repo-xyz:Q4_K_M >"$WORK/no-listing.log" 2>&1
 if grep -q 'cannot resolve quant' "$WORK/no-listing.log"; then
