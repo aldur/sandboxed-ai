@@ -3,7 +3,8 @@
 #
 # Layout: constants → sandbox helpers → Hugging Face downloads → model
 # resolution (GGUF, MLX) → one cmd_* per subcommand, each ending in
-# `exec sandbox-exec` with every grant spelled out → dispatch.
+# `exec env -i … sandbox-exec` with every grant spelled out → dispatch.
+# The environment is an allowlist, not an inheritance: see sandbox_env.
 #
 # Subcommand → seatbelt profile (all import common.sb; the servers also
 # import net-tcp.sb or net-unix.sb, chosen by --socket):
@@ -580,6 +581,32 @@ seed_hf_cache() {
 # die unless the option $1 is followed by a value.
 need_arg() { [[ $# -ge 2 ]] || die "$1 requires an argument"; }
 
+# Variables every sandboxed tool gets: where to find programs, and enough
+# terminal/locale context to render output. None carry credentials.
+readonly -a ENV_BASE=(PATH TERM TERM_PROGRAM COLORTERM LANG LC_ALL LC_CTYPE TZ NO_COLOR)
+
+# Build the `env -i` prefix for a sandboxed exec into the array named by
+# $1, passing through only the variables named in the remaining arguments
+# (unset ones are skipped).
+#
+# The sandboxed process is the one assumed to go rogue, so it must not
+# inherit the caller's environment wholesale: a shell that exports
+# GITHUB_TOKEN, AWS_*, HF_TOKEN or similar would otherwise hand those
+# straight to it — the seatbelt blocks the network, but a client can still
+# write them into its workspace and a server can echo them back over the
+# completion API. An allowlist also drops the interpreter knobs
+# (PYTHONPATH, PYTHONSTARTUP, NODE_OPTIONS, DYLD_*) that would otherwise
+# steer the Python and Node runtimes inside the sandbox.
+sandbox_env() {
+  local -n _env="$1"
+  shift
+  _env=(env -i)
+  local var
+  for var in "${ENV_BASE[@]}" "$@"; do
+    [[ -n "${!var:-}" ]] && _env+=("$var=${!var}")
+  done
+}
+
 # Consume leading -w/--workspace DIR (last wins); sets WORKSPACE and ARGS
 # (the remaining args, passed through to the wrapped tool).
 parse_workspace() {
@@ -627,6 +654,9 @@ cmd_llama() {
 
   mkdir -p "$CACHE_DIR" "$TMPDIR"
   export TMPDIR
+  # Root ~-relative lookups inside the writable cache: the real HOME is
+  # not granted, and under the env allowlist below nothing else defines it.
+  export HOME="$CACHE_DIR"
   resolve_darwin_dirs
 
   local -a server_args=(--model "$model_path" --alias "$model_alias" --port "$PORT")
@@ -647,7 +677,9 @@ cmd_llama() {
 
   # MMPROJ_DIR falls back to MODEL_DIR when no projector is given:
   # sandbox-exec errors out on profile parameters that were never passed.
-  exec sandbox-exec \
+  local -a sbx_env
+  sandbox_env sbx_env HOME TMPDIR
+  exec "${sbx_env[@]}" sandbox-exec \
     -D COMMON_SB="$PROFILES_DIR/common.sb" \
     -D SERVER_SB="$PROFILES_DIR/server.sb" \
     -D NET_SB="$NET_SB" \
@@ -697,9 +729,6 @@ cmd_mlx() {
   # server holds GPU and model access, so refuse user-site imports outright
   # rather than rely on the directory staying unwritable.
   export PYTHONNOUSERSITE=1
-  # An inherited PYTHONPATH (a nix devshell exports one) shadows the
-  # server's own bundled site-packages; the wrapper knows its deps.
-  unset PYTHONPATH
 
   # Serve by repo id when the spec is an HF repo: the seeded cache entry
   # lets both servers resolve that id offline and list it on /v1/models, so
@@ -757,7 +786,11 @@ cmd_mlx() {
 
   cd "$CACHE_DIR"
 
-  exec sandbox-exec \
+  # NIX_SSL_CERT_FILE: nixpkgs' certifi opens it verbatim (see
+  # resolve_ca_file); the profile grants read on exactly that path.
+  local -a sbx_env
+  sandbox_env sbx_env HOME TMPDIR HF_HOME HF_HUB_OFFLINE PYTHONNOUSERSITE NIX_SSL_CERT_FILE
+  exec "${sbx_env[@]}" sandbox-exec \
     -D COMMON_SB="$PROFILES_DIR/common.sb" \
     -D SERVER_SB="$PROFILES_DIR/server.sb" \
     -D NET_SB="$NET_SB" \
@@ -821,7 +854,9 @@ cmd_pi() {
 
   cd "$WORKSPACE"
 
-  exec sandbox-exec \
+  local -a sbx_env
+  sandbox_env sbx_env HOME TMPDIR LLAMA_BASE_URL LLAMA_API_KEY PI_OFFLINE
+  exec "${sbx_env[@]}" sandbox-exec \
     -D COMMON_SB="$PROFILES_DIR/common.sb" \
     -D CLIENT_SB="$PROFILES_DIR/client.sb" \
     -D PKG_STORE="$pkg_store" \
@@ -840,10 +875,9 @@ cmd_pi() {
 cmd_llm() {
   export LLM_USER_PATH="$STATE_DIR/llm"
   export OPENAI_API_KEY="${OPENAI_API_KEY:-dummy}"
-  # An inherited PYTHONPATH (a nix devshell exports one) shadows the llm
-  # wrapper's own bundled site-packages — with a mismatched interpreter
-  # version it breaks native imports outright.
-  unset PYTHONPATH
+  # Root ~-relative lookups inside llm's own state dir: the real HOME is
+  # not granted, and under the env allowlist below nothing else defines it.
+  export HOME="$LLM_USER_PATH"
   mkdir -p "$LLM_USER_PATH" "$TMPDIR"
   export TMPDIR
 
@@ -859,7 +893,9 @@ cmd_llm() {
 
   cd "$LLM_USER_PATH"
 
-  exec sandbox-exec \
+  local -a sbx_env
+  sandbox_env sbx_env HOME TMPDIR LLM_USER_PATH OPENAI_API_KEY
+  exec "${sbx_env[@]}" sandbox-exec \
     -D COMMON_SB="$PROFILES_DIR/common.sb" \
     -D CLIENT_SB="$PROFILES_DIR/client.sb" \
     -D PKG_STORE="$pkg_store" \

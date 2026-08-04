@@ -125,6 +125,11 @@ echo "# models: $TEST_GGUF_MODEL / $TEST_MLX_MODEL"
 echo "# work:   $WORK"
 
 # ── llama-server: TCP ─────────────────────────────────────
+# Credential-shaped variables the caller's shell might hold: the sandboxed
+# process must not inherit them (probed below via ps once it is up).
+CANARY="sandboxed-ai-canary-$$"
+export AWS_SECRET_ACCESS_KEY="$CANARY" GITHUB_TOKEN="$CANARY" HF_TOKEN="$CANARY"
+
 start_server llama-tcp llama-server --model "$TEST_GGUF_MODEL"
 if wait_http "http://127.0.0.1:$PORT/health" 180; then
   ok "llama-server (tcp) becomes healthy"
@@ -135,6 +140,27 @@ if wait_http "http://127.0.0.1:$PORT/health" 180; then
   fi
 else
   fail "llama-server (tcp) becomes healthy" "$WORK/llama-tcp.log"
+fi
+
+# ── Environment allowlist ─────────────────────────────────
+# sandbox.sh re-execs through `env -i` with a fixed allowlist, so the
+# caller's credentials never reach the process the sandbox assumes may go
+# rogue. `ps -Eww` prints another process's environment (same user).
+if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
+  ps -Eww -p "$SERVER_PID" >"$WORK/server-env.txt" 2>&1
+  if grep -q 'TMPDIR=' "$WORK/server-env.txt"; then
+    if grep -q "$CANARY" "$WORK/server-env.txt"; then
+      fail "env: caller credentials do not reach the sandbox" "$WORK/server-env.txt"
+    else
+      ok "env: caller credentials do not reach the sandbox"
+    fi
+  else
+    # No TMPDIR means ps showed no environment at all — the absence of the
+    # canary would prove nothing.
+    skip "env: caller credentials do not reach the sandbox" "ps -E shows no environment"
+  fi
+else
+  skip "env: caller credentials do not reach the sandbox" "server not running"
 fi
 
 # ── llm client against the running server ─────────────────
