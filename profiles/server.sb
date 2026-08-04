@@ -9,22 +9,17 @@
 ;; ── Mach (GPU) ───────────────────────────────────────────
 ;; Shader compilation runs in an XPC service, so it needs an
 ;; xpc-service-name lookup — common.sb denies the wildcard that (version 1)
-;; would otherwise hand out. Only reached when the Metal cache is cold:
-;; with a warm cache llama.cpp loads a precompiled library and never asks,
-;; which is why this is easy to break without noticing. The GPU-daemon
-;; global-names that used to be here (gpumemd, metal.shared,
-;; GPUCompiler.daemon) are not needed even from cold.
+;; would otherwise hand out. Only reached when the Metal cache is cold: a
+;; warm cache means a precompiled library and no compiler at all, so
+;; tests/e2e.sh clears the cache to exercise this.
 (allow mach-lookup
   (xpc-service-name "com.apple.MTLCompilerService"))
 
 ;; ── IOKit: GPU ───────────────────────────────────────────
-;; Metal only, and only the two user clients that turn out to be load
-;; bearing: the AGX* trio and IOAcceleratorClient are alternative paths
-;; the drivers no longer take here, and the Neural Engine clients were
-;; never in play (neither llama.cpp nor MLX reaches the ANE — that is
-;; CoreML). What remains cannot be reduced further: it is what talking to
-;; the GPU requires (see the README on what this sandbox does not
-;; contain).
+;; The two user clients Metal needs, and nothing further: no Neural Engine
+;; (neither llama.cpp nor MLX reaches it — that is CoreML), no AGX
+;; clients. This is the floor for talking to the GPU; see the README on
+;; what that means for the threat model.
 (allow iokit-open
   (iokit-user-client-class "IOGPUDeviceUserClient")
   (iokit-user-client-class "IOSurfaceRootUserClient"))
@@ -34,10 +29,8 @@
 (allow file-read*
   (subpath (param "MODEL_DIR")))
 
-;; Metal shader / PSO cache. No TMPDIR: the one concrete use anyone could
-;; name for it — Python's tempfile, where mlx-vlm was assumed to spool
-;; uploaded images — does not happen. Both engines answer questions about
-;; a 3.2 MB image with this grant removed.
+;; Metal shader / PSO cache — the only directory a server writes to.
+;; Neither engine needs scratch space of its own, images included.
 (allow file-read* file-write* file-lock
   (subpath (param "CACHE_DIR")))
 
@@ -56,8 +49,7 @@
 
 ;; ── Sandbox extensions for MTLCompilerService ──────────
 ;; The compiler XPC service reaches those paths through extensions the
-;; server issues. Needed by MLX from a cold cache — llama.cpp survives
-;; without it, MLX does not.
+;; server issues. MLX needs this to build its kernels from a cold cache.
 (allow file-issue-extension
   (require-all
     (extension-class "com.apple.app-sandbox.read-write")

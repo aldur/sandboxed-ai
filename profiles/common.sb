@@ -2,11 +2,9 @@
 ;; common.sb — base rules imported first by every profile; the servers
 ;; additionally import server.sb, the clients client.sb.
 ;;
-;; Every grant here (and in the other profiles) survived tests/ablate.py:
-;; each one was removed in turn and the tools re-run, so what remains is
-;; what something actually needs. Rules that only system.sb's own grants
-;; made redundant — /usr/lib, the frameworks, /dev/null, /dev/std* — are
-;; gone rather than kept as decoration.
+;; What is not here is deliberate: system.sb already grants the system
+;; libraries, /dev/null and the standard streams. tests/ablate.py keeps
+;; this set honest by removing each grant and re-running the tools.
 
 (import "system.sb")
 (import "com.apple.corefoundation.sb")
@@ -19,15 +17,11 @@
 ;; which would hand back exactly what the env allowlist in sandbox.sh
 ;; takes away. Allows are additive and the last matching rule wins, so
 ;; deny both here; every allowlist below is what actually takes effect.
-;; Verified by probe: without these denies kern.uuid, net.* and other
-;; processes' argv are all readable.
 (deny sysctl-read)
 (deny process-info*)
 ;; Same shape: (version 1) makes system.sb grant every XPC service by name
-;; prefix, and CoreFoundation's import grants every preference domain, so
-;; the enumerated lists in the other profiles would otherwise describe a
-;; tighter sandbox than the one that runs. server.sb re-allows the one XPC
-;; service Metal needs.
+;; prefix, and CoreFoundation's import grants every preference domain.
+;; server.sb re-allows the one XPC service Metal needs.
 (deny mach-lookup (xpc-service-name-prefix ""))
 (deny user-preference-read)
 

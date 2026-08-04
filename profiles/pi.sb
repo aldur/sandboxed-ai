@@ -5,13 +5,10 @@
 ;; pi (pi-coding-agent) sandbox — shells, TTY and server-dialing come from
 ;; client.sb; this file adds pi's own state and its workspace.
 ;;
-;; Everything a TUI is assumed to need but does not: WindowServer and HID
-;; lookups (raw mode is tcsetattr on the terminal client.sb grants — with
-;; com.apple.windowserver.active the agent could enumerate every on-screen
-;; window instead), POSIX shared memory and semaphores, CoreServices and
-;; SystemConfiguration lookups, the xcode-select paths, locale and
-;; timezone data, and process-info-setcontrol. Each was removed and the
-;; agent re-run, non-interactively and as a full TUI on a pty.
+;; A TUI needs no window-system or input-device access: raw mode is
+;; tcsetattr on the terminal client.sb grants. Anything that would let the
+;; agent see the rest of the desktop — the WindowServer lookup above all —
+;; stays out.
 (import (param "COMMON_SB"))
 (import (param "CLIENT_SB"))
 

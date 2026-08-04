@@ -27,12 +27,9 @@
 (allow file-read*
   (literal "/private/etc/hosts"))
 
-;; TLS trust store — the CA bundle certifi opens. Kept although the
-;; current tests pass without it: huggingface_hub has historically built
-;; an SSL context even under HF_HUB_OFFLINE, and nixpkgs' certifi opens
-;; this path verbatim at import (see resolve_ca_file in sandbox.sh). One
-;; read of a public bundle, and the failure it prevents is a hard import
-;; error on someone else's machine.
+;; TLS trust store: nixpkgs' certifi opens this path verbatim at import,
+;; and huggingface_hub builds an SSL context even under HF_HUB_OFFLINE
+;; (see resolve_ca_file in sandbox.sh).
 (allow file-read*
   (literal (param "CA_FILE")))
 

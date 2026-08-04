@@ -180,6 +180,22 @@ else
   fail "llama-server (tcp) becomes healthy" "$WORK/llama-tcp.log"
 fi
 
+# ── Working directory ─────────────────────────────────────
+# getcwd() is subject to the sandbox, so the process must sit in a
+# directory its profile grants — anywhere else and Python dies at import.
+# It is also what tmux shows as the pane's path, so it should be the tool's
+# own state, never somewhere surprising.
+if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
+  srv_cwd="$(lsof -a -d cwd -p "$SERVER_PID" -Fn 2>/dev/null | grep '^n' | cut -c2- | head -1)"
+  if [[ "$srv_cwd" == "$STATE_DIR"/* ]]; then
+    ok "the server runs in a directory its profile grants"
+  else
+    fail "the server runs in a directory its profile grants (got ${srv_cwd:-unknown})"
+  fi
+else
+  skip "the server runs in a directory its profile grants" "server not running"
+fi
+
 # ── Environment allowlist ─────────────────────────────────
 # sandbox.sh re-execs through `env -i` with a fixed allowlist, so the
 # caller's credentials never reach the process the sandbox assumes may go
@@ -416,8 +432,8 @@ else
 fi
 
 # Raw mode is tcsetattr on the granted terminal, not a window-system
-# capability: with com.apple.windowserver.active the agent could enumerate
-# every on-screen window (owner names and geometry).
+# capability: an agent that could reach WindowServer would be able to
+# enumerate every on-screen window, with owner names and geometry.
 if [[ -n "$PY" ]]; then
   cat >"$SCRATCH/ws/win.py" <<'PYEOF'
 import ctypes
@@ -440,9 +456,9 @@ else
 fi
 
 # The agent must not share writable state with the sandboxes that hold the
-# GPU and the weights. Two channels used to exist: Apple's per-user Metal
-# shader/PSO cache (which a server maps executable on its next start) and a
-# single shared scratch dir.
+# GPU and the weights: not Apple's per-user Metal shader/PSO cache (which a
+# server maps executable on its next start), and not another sandbox's
+# scratch directory.
 if pi_sh "ls '$DARWIN_CACHE/com.apple.metal' || : > '$DARWIN_CACHE/com.apple.metal/probe'"; then
   fail "probe: the agent cannot reach the Metal shader cache"
 else
@@ -572,13 +588,13 @@ else
 fi
 
 # ── `set -e` does not swallow the run ─────────────────────
-# Helpers whose last statement is a short-circuiting test return 1, and a
+# A helper whose last statement is a short-circuiting test returns 1, and a
 # bare call under `set -euo pipefail` then kills the script with no
-# message. Both shapes below used to abort mid-run:
-#   sandbox_env — last allowlisted variable unset (NIX_SSL_CERT_FILE is
-#     unset on a Homebrew install), aborting *after* the startup banner
-#   split_lines — empty listing, which made the "cannot resolve quant"
-#     error unreachable
+# message. Two shapes are at risk:
+#   sandbox_env — the last allowlisted variable unset (NIX_SSL_CERT_FILE is
+#     unset on a Homebrew install), which would abort after the banner
+#   split_lines — an empty listing, which would swallow "cannot resolve
+#     quant"
 if [[ -n "$MLX_SERVER" ]]; then
   if env -u NIX_SSL_CERT_FILE "$SANDBOX" mlx-server --model "$TEST_MLX_MODEL" --help \
     >"$WORK/unset-env.log" 2>&1; then
@@ -610,8 +626,8 @@ fi
 
 # The workspace is the one caller-supplied path the agent gets read+write
 # over, so it is canonicalized and refused when it would contain the state
-# it is served from. `cd ~ && … pi` is the natural invocation that used to
-# hand the agent the model cache, digest sidecars and completion markers.
+# it is served from — `cd ~ && … pi` would otherwise hand the agent the
+# model cache, the digest sidecars and the completion markers.
 ws_reject() { # $1 label, rest: sandbox.sh pi args
   local label="$1"
   shift
@@ -680,9 +696,9 @@ fi
 
 # ── system.sb's wholesale grants stay re-armed ────────────
 # system.sb (imported by common.sb) ends with a bare (allow sysctl-read)
-# and an unfiltered process-info grant. common.sb denies both so the
-# curated allowlists mean something; without those denies a sandboxed tool
-# reads other processes' argv, which is where credentials live.
+# and an unfiltered process-info grant; common.sb denies both. Without
+# those denies a sandboxed tool reads other processes' argv, which is
+# where credentials live.
 cat >"$SCRATCH/ws/leak.py" <<'PYEOF'
 import ctypes, ctypes.util, sys
 libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
@@ -740,9 +756,9 @@ else
 fi
 
 # ── mlx exec grant names the entry point's chain only ─────
-# The profile used to allow exec across the whole package store. It now
-# names the entry point, its shebang interpreter and any wrapper
-# indirection, so an unrelated binary from the same store must be refused.
+# The profile names the entry point, its shebang interpreter and any
+# wrapper indirection, so an unrelated binary from the same store must be
+# refused.
 MLX_BIN="$MLX_SERVER"
 # A real file, not a shell builtin, and unrelated to the mlx chain.
 OTHER_BIN="$(realpath "$(command -v ls)" 2>/dev/null || true)"

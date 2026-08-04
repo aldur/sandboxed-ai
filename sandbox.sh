@@ -794,8 +794,10 @@ seed_hf_cache() {
 }
 
 # ── Subcommands ───────────────────────────────────────────
-# Each cmd_* cds into a sandbox-readable directory (the sandboxed process's
-# getcwd() must resolve) and ends in `exec sandbox-exec` with every grant
+# Each cmd_* cds into a directory its profile grants read on: getcwd() is
+# subject to the sandbox, and Python raises EPERM from it (rich computes
+# os.getcwd() at import) anywhere else. That directory is what tmux reports
+# as the pane's path while the tool runs. Each ends in `exec sandbox-exec` with every grant
 # spelled out at the call site — keep it that way: the full parameter set of
 # every sandbox must stay auditable where it is used. The -D blocks share a
 # fixed order: COMMON_SB, SERVER_SB/CLIENT_SB, NET_*, PKG_STORE,
@@ -1020,12 +1022,9 @@ cmd_mlx() {
   # and 500s (CacheNotFound) when it's missing.
   export HOME="$CACHE_DIR/mlx-home"
   export HF_HOME="$HOME/huggingface"
-  # Emptied, not just topped up: /v1/models lists everything in this cache,
-  # and the sandbox grants MODEL_DIR for the served model only. Entries left
-  # by earlier runs would be advertised to clients, which then ask for a
-  # model the server is not allowed to open — an "Operation not permitted"
-  # on a path the user never mentioned. Only what is seeded below is
-  # servable, so only that may be listed.
+  # Emptied before seeding: /v1/models lists whatever is in this cache, and
+  # the sandbox grants MODEL_DIR for the served model alone. Anything else
+  # listed is a model a client can ask for and the server may not open.
   rm -rf "$HF_HOME/hub"
   mkdir -p "$HF_HOME/hub"
   # The model is fully local and the sandbox denies outbound network anyway;
