@@ -68,8 +68,19 @@ MODELS_DIR="${SANDBOXED_AI_MODELS:-$STATE_DIR/models}"
 # place and run the tool with no sandbox at all, under a banner that says
 # "Starting sandboxed …". The model binaries go through resolve_binary for
 # the same reason; this one cannot afford even that much indirection.
+# The invoking user's home, resolved before any subcommand re-roots HOME.
+# common.sb grants path-traversal metadata on this rather than all of
+# /Users: on a shared machine the other users' trees are none of our
+# business, and everything this script owns lives under here.
+HOME_DIR="$(realpath "$HOME" 2>/dev/null || printf '%s' "$HOME")"
+# ...and its parent as a bare literal: sqlite stats every ancestor of the
+# database it opens, so /Users must be stat-able even though nothing needs
+# to look inside it.
+HOME_PARENT="${HOME_DIR%/*}"
+[[ -n "$HOME_PARENT" ]] || HOME_PARENT=/
+
 SANDBOX_EXEC=/usr/bin/sandbox-exec
-readonly SCRIPT_DIR PROFILES_DIR PROG PORT STATE_DIR MODELS_DIR SANDBOX_EXEC
+readonly SCRIPT_DIR PROFILES_DIR PROG PORT STATE_DIR MODELS_DIR HOME_DIR HOME_PARENT SANDBOX_EXEC
 
 # ── Output & usage ────────────────────────────────────────
 die() {
@@ -956,6 +967,8 @@ cmd_llama() {
     -D NET_SB="$NET_SB" \
     -D NET_TARGET="$NET_TARGET" \
     -D PKG_STORE="$pkg_store" \
+    -D HOME_DIR="$HOME_DIR" \
+    -D HOME_PARENT="$HOME_PARENT" \
     -D DARWIN_USER_TEMP_DIR="$DARWIN_USER_TEMP_DIR" \
     -D DARWIN_METAL_CACHE="$DARWIN_METAL_CACHE" \
     -D DARWIN_METALFE_CACHE="$DARWIN_METALFE_CACHE" \
@@ -1083,6 +1096,8 @@ cmd_mlx() {
     -D NET_SB="$NET_SB" \
     -D NET_TARGET="$NET_TARGET" \
     -D PKG_STORE="$pkg_store" \
+    -D HOME_DIR="$HOME_DIR" \
+    -D HOME_PARENT="$HOME_PARENT" \
     -D DARWIN_USER_TEMP_DIR="$DARWIN_USER_TEMP_DIR" \
     -D DARWIN_METAL_CACHE="$DARWIN_METAL_CACHE" \
     -D DARWIN_METALFE_CACHE="$DARWIN_METALFE_CACHE" \
@@ -1152,6 +1167,8 @@ cmd_pi() {
     -D COMMON_SB="$PROFILES_DIR/common.sb" \
     -D CLIENT_SB="$PROFILES_DIR/client.sb" \
     -D PKG_STORE="$pkg_store" \
+    -D HOME_DIR="$HOME_DIR" \
+    -D HOME_PARENT="$HOME_PARENT" \
     -D WORKSPACE="$WORKSPACE" \
     -D PI_DIR="$pi_home" \
     -D PI_LLAMA_DIR="$PI_LLAMA_DIR" \
@@ -1189,6 +1206,8 @@ cmd_llm() {
     -D COMMON_SB="$PROFILES_DIR/common.sb" \
     -D CLIENT_SB="$PROFILES_DIR/client.sb" \
     -D PKG_STORE="$pkg_store" \
+    -D HOME_DIR="$HOME_DIR" \
+    -D HOME_PARENT="$HOME_PARENT" \
     -D LLM_USER_PATH="$LLM_USER_PATH" \
     -D TMPDIR="$TMPDIR" \
     -D TTY_DEV="$TTY_DEV" \

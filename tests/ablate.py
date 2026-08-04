@@ -98,33 +98,6 @@ def clause_spans(form_text):
     return spans
 
 
-def variants(path):
-    """(label, new_text) for each removable entry in the profile at path."""
-    text = open(path).read()
-    out = []
-    for s, e in top_forms(text):
-        form = text[s:e]
-        if not form.startswith("(allow"):
-            continue
-        head = " ".join(form.split()[:3])[:48]
-        # Whole form.
-        out.append(("form: " + head, text[:s] + text[e:], (s, e)))
-        # Individual clauses, but only where at least two remain: dropping
-        # the last clause of an allow turns it into an *unfiltered* allow,
-        # which is a widening, not an ablation.
-        spans = clause_spans(form)
-        if len(spans) > 1:
-            for cs, ce in spans:
-                clause = form[cs:ce]
-                if clause.startswith("(require") or clause.startswith("(param"):
-                    continue
-                new_form = form[:cs] + form[ce:]
-                out.append(
-                    ("clause: %s in %s" % (clause[:44], head), text[:s] + new_form + text[e:], (s, e))
-                )
-    return out
-
-
 # ── smoke tests ───────────────────────────────────────────
 def prepare(profile_name, new_text):
     """Materialise a run dir whose profiles differ in exactly one entry."""
@@ -162,25 +135,6 @@ def chat_ok(url, model=None):
             return b"choices" in r.read()
     except Exception:
         return False
-
-
-def run_server(sandbox, args, ready_url, timeout=75):
-    """Start a server, return True if it becomes healthy and completes."""
-    log = open(os.path.join(RUN, "server.log"), "w")
-    p = subprocess.Popen(
-        [sandbox] + args, stdout=log, stderr=subprocess.STDOUT, start_new_session=True
-    )
-    try:
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if p.poll() is not None:
-                return False
-            if http_ok(ready_url):
-                return True
-            time.sleep(1)
-        return False
-    finally:
-        pass  # caller stops it
 
 
 def stop(p):
@@ -336,6 +290,8 @@ def t_shell(sandbox):
             "-D", "COMMON_SB=%s/profiles/common.sb" % RUN,
             "-D", "CLIENT_SB=%s/profiles/client.sb" % RUN,
             "-D", "PKG_STORE=/nix",
+            "-D", "HOME_DIR=%s" % os.path.expanduser("~"),
+            "-D", "HOME_PARENT=%s" % os.path.dirname(os.path.expanduser("~")),
             "-D", "WORKSPACE=%s" % ws,
             "-D", "PI_DIR=%s/pi" % state,
             "-D", "PI_LLAMA_DIR=%s/pi" % state,

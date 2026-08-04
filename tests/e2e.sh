@@ -108,6 +108,8 @@ pi_sh() {
     -D COMMON_SB="$ROOT/profiles/common.sb" \
     -D CLIENT_SB="$ROOT/profiles/client.sb" \
     -D PKG_STORE="$PKG_STORE" \
+    -D HOME_DIR="$HOME" \
+    -D HOME_PARENT="$(dirname "$HOME")" \
     -D WORKSPACE="$SCRATCH/ws" \
     -D PI_DIR="$STATE_DIR/pi" \
     -D PI_LLAMA_DIR="$STATE_DIR/pi" \
@@ -712,6 +714,8 @@ if [[ -n "$MLX_BIN" && "$OTHER_BIN" == "$PKG_STORE"/* ]]; then
     -D NET_SB="$ROOT/profiles/net-tcp.sb" \
     -D NET_TARGET="*:$PORT" \
     -D PKG_STORE="$PKG_STORE" \
+    -D HOME_DIR="$HOME" \
+    -D HOME_PARENT="$(dirname "$HOME")" \
     -D DARWIN_USER_TEMP_DIR="$DARWIN_TMP" \
     -D DARWIN_METAL_CACHE="$DARWIN_CACHE/com.apple.metal" \
     -D DARWIN_METALFE_CACHE="$DARWIN_CACHE/com.apple.metalfe" \
@@ -745,6 +749,8 @@ if [[ -n "$PY" ]]; then
     -D NET_SB="$ROOT/profiles/net-tcp.sb" \
     -D NET_TARGET="*:$PORT" \
     -D PKG_STORE="$PKG_STORE" \
+    -D HOME_DIR="$HOME" \
+    -D HOME_PARENT="$(dirname "$HOME")" \
     -D DARWIN_USER_TEMP_DIR="$DARWIN_TMP" \
     -D DARWIN_METAL_CACHE="$DARWIN_CACHE/com.apple.metal" \
     -D DARWIN_METALFE_CACHE="$DARWIN_CACHE/com.apple.metalfe" \
@@ -779,6 +785,8 @@ if [[ -n "$PY" ]]; then
     -D NET_SB="$ROOT/profiles/net-tcp.sb" \
     -D NET_TARGET="*:$PORT" \
     -D PKG_STORE="$PKG_STORE" \
+    -D HOME_DIR="$HOME" \
+    -D HOME_PARENT="$(dirname "$HOME")" \
     -D DARWIN_USER_TEMP_DIR="$DARWIN_TMP" \
     -D DARWIN_METAL_CACHE="$DARWIN_CACHE/com.apple.metal" \
     -D DARWIN_METALFE_CACHE="$DARWIN_CACHE/com.apple.metalfe" \

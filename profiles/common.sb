@@ -55,7 +55,12 @@
 ;; SQLite and other tools need to stat() ancestor directories when
 ;; resolving absolute paths, and the per-user darwin dirs the servers get
 ;; sit two levels inside /private/var/folders. Metadata only — directory
-;; existence checks, not file contents.
+;; existence checks, not file contents — and scoped to the invoking user's
+;; home rather than all of /Users, so other accounts on the machine are
+;; not enumerable. HOME_PARENT (/Users) is a bare literal, not a subpath:
+;; sqlite stats every ancestor of its database, and stat of that one
+;; directory entry reveals nothing about what is inside it.
 (allow file-read-metadata
-  (subpath "/Users")
+  (subpath (param "HOME_DIR"))
+  (literal (param "HOME_PARENT"))
   (subpath "/private/var/folders"))
