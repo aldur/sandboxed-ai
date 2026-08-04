@@ -89,6 +89,39 @@ chat_ok() {
   grep -q '"choices"' "$out"
 }
 
+# ── Toolchain ─────────────────────────────────────────────
+# Resolved from the flake, not from PATH: an ambient devshell can be stale
+# (a cached one shipped an mlx-lm without the unix-socket patch, which
+# silently turned that test into a skip), and the point of the suite is to
+# test what this repo builds. sandbox.sh takes each as an env override.
+# An explicit override still wins, and without nix we fall back to PATH.
+flake_bin() { # $1 flake attr, $2 binary name, $3 override var name
+  local attr="$1" name="$2" var="$3" out
+  if [[ -n "${!var:-}" ]]; then
+    printf '%s' "${!var}"
+    return
+  fi
+  if command -v nix >/dev/null &&
+    out="$(nix build --no-link --print-out-paths "$ROOT#$attr" 2>/dev/null)" &&
+    [[ -x "$out/bin/$name" ]]; then
+    printf '%s' "$out/bin/$name"
+    return
+  fi
+  command -v "$name" 2>/dev/null || true
+}
+
+echo "# resolving the toolchain from the flake (this builds on first run)…"
+LLAMA_SERVER="$(flake_bin llama-cpp llama-server LLAMA_SERVER)"
+MLX_SERVER="$(flake_bin mlx-lm mlx_lm.server MLX_SERVER)"
+MLX_VLM_SERVER="$(flake_bin mlx-vlm mlx_vlm.server MLX_VLM_SERVER)"
+LLM="$(flake_bin llm llm LLM)"
+PI="$(flake_bin pi pi PI)"
+export LLAMA_SERVER MLX_SERVER MLX_VLM_SERVER LLM PI
+if [[ -z "${PI_LLAMA_DIR:-}" ]] && command -v nix >/dev/null; then
+  PI_LLAMA_DIR="$(nix build --no-link --print-out-paths "$ROOT#pi-llama" 2>/dev/null)" || PI_LLAMA_DIR=""
+  export PI_LLAMA_DIR
+fi
+
 # ── Direct-profile probes ─────────────────────────────────
 # The per-user darwin dirs and profile params, mirroring sandbox.sh.
 DARWIN_TMP="$(realpath "$(getconf DARWIN_USER_TEMP_DIR)")"
@@ -236,10 +269,10 @@ fi
 
 # mlx-vlm, which is a different decoder path (Pillow rather than mtmd) and
 # needs the patched build the flake produces.
-MLX_VLM="${MLX_VLM_SERVER:-$(command -v mlx_vlm.server 2>/dev/null || true)}"
+MLX_VLM="$MLX_VLM_SERVER"
 if [[ -n "$PY" && -n "$MLX_VLM" ]]; then
   MLX_VISION_MODEL="${TEST_MLX_VISION_MODEL:-mlx-community/SmolVLM-256M-Instruct-4bit}"
-  MLX_VLM_SERVER="$MLX_VLM" start_server mlx-vision mlx-server --model "$MLX_VISION_MODEL"
+  start_server mlx-vision mlx-server --model "$MLX_VISION_MODEL"
   if wait_http "http://127.0.0.1:$PORT/v1/models" 300; then
     if image_chat "$WORK/img.b64" "$WORK/mlx-vision-answer.txt" "$MLX_VISION_MODEL"; then
       ok "mlx_vlm.server answers about an image ($(tr -d '\n' <"$WORK/mlx-vision-answer.txt" | cut -c1-40))"
@@ -283,7 +316,7 @@ else
 fi
 
 # ── llm client against the running server ─────────────────
-if command -v llm >/dev/null; then
+if [[ -n "$LLM" ]]; then
   if "$SANDBOX" llm 'Say OK' >"$WORK/llm.out" 2>&1 && [[ -s "$WORK/llm.out" ]]; then
     ok "llm answers through its sandbox"
   else
@@ -296,11 +329,7 @@ fi
 # ── pi against the running server ─────────────────────────
 # PI_LLAMA_DIR comes from the caller or from the flake (the devshell does
 # not export it; the nix-built wrapper bakes it in).
-if [[ -z "${PI_LLAMA_DIR:-}" ]] && command -v nix >/dev/null; then
-  PI_LLAMA_DIR="$(nix build --no-link --print-out-paths "$ROOT#pi-llama" 2>/dev/null)" || PI_LLAMA_DIR=""
-  export PI_LLAMA_DIR
-fi
-if [[ -n "${PI_LLAMA_DIR:-}" ]] && command -v pi >/dev/null; then
+if [[ -n "${PI_LLAMA_DIR:-}" && -n "$PI" ]]; then
   mkdir -p "$SCRATCH/ws"
   if "$SANDBOX" pi -w "$SCRATCH/ws" -p 'Say OK' >"$WORK/pi.out" 2>&1 &&
     [[ -s "$WORK/pi.out" ]]; then
@@ -316,7 +345,7 @@ fi
 # `pi -p` never enters raw mode, so it would not notice a missing terminal
 # or input grant. Drive the full TUI on a pty instead and assert it renders
 # and accepts a keystroke.
-if [[ -n "$PY" ]] && [[ -n "${PI_LLAMA_DIR:-}" ]] && command -v pi >/dev/null; then
+if [[ -n "$PY" && -n "${PI_LLAMA_DIR:-}" && -n "$PI" ]]; then
   mkdir -p "$SCRATCH/tui"
   if "$PY" - "$SANDBOX" "$SCRATCH/tui" >"$WORK/tui.log" 2>&1 <<'PYEOF'; then
 import os, pty, select, sys, time, re
@@ -480,7 +509,7 @@ fi
 stop_server
 
 # ── mlx-server: TCP ───────────────────────────────────────
-if command -v mlx_lm.server >/dev/null; then
+if [[ -n "$MLX_SERVER" ]]; then
   start_server mlx-tcp mlx-server --model "$TEST_MLX_MODEL"
   if wait_http "http://127.0.0.1:$PORT/v1/models" 180; then
     ok "mlx-server (tcp) becomes healthy"
@@ -498,13 +527,15 @@ else
 fi
 
 # ── mlx-server: UNIX socket (needs the patched mlx-lm) ────
+# The unix-socket support is a patch this flake applies; if the resolved
+# build lacks it, say so loudly rather than skipping quietly.
 mlx_patched() {
-  local bin site
-  bin="$(command -v mlx_lm.server)" || return 1
-  site="$(cd -P -- "$(dirname -- "$bin")/.." && pwd)"
+  local site
+  [[ -n "$MLX_SERVER" ]] || return 1
+  site="$(cd -P -- "$(dirname -- "$MLX_SERVER")/.." && pwd)"
   grep -rq 'endswith(".sock")' "$site"/lib/python*/site-packages/mlx_lm/server.py 2>/dev/null
 }
-if command -v mlx_lm.server >/dev/null && mlx_patched; then
+if [[ -n "$MLX_SERVER" ]] && mlx_patched; then
   SOCK="$SCRATCH/mlx.sock"
   start_server mlx-sock mlx-server --model "$TEST_MLX_MODEL" --socket "$SOCK"
   if wait_http "--unix-socket $SOCK http://localhost/v1/models" 180; then
@@ -526,7 +557,7 @@ if command -v mlx_lm.server >/dev/null && mlx_patched; then
   fi
   stop_server
 else
-  skip "mlx-server (unix socket)" "mlx-lm build lacks the unix-socket patch — reload the devshell"
+  fail "mlx-server (unix socket): the resolved mlx-lm lacks the flake's unix-socket patch ($MLX_SERVER)"
 fi
 
 # ── `set -e` does not swallow the run ─────────────────────
@@ -537,7 +568,7 @@ fi
 #     unset on a Homebrew install), aborting *after* the startup banner
 #   split_lines — empty listing, which made the "cannot resolve quant"
 #     error unreachable
-if command -v mlx_lm.server >/dev/null; then
+if [[ -n "$MLX_SERVER" ]]; then
   if env -u NIX_SSL_CERT_FILE "$SANDBOX" mlx-server --model "$TEST_MLX_MODEL" --help \
     >"$WORK/unset-env.log" 2>&1; then
     ok "startup: an unset allowlisted variable does not abort the run"
@@ -555,7 +586,7 @@ mkdir -p "$SCRATCH/fakebin"
 printf '#!/bin/sh\ntouch "%s/stub-ran"\n' "$SCRATCH" >"$SCRATCH/fakebin/sandbox-exec"
 chmod +x "$SCRATCH/fakebin/sandbox-exec"
 rm -f "$SCRATCH/stub-ran"
-if command -v llm >/dev/null; then
+if [[ -n "$LLM" ]]; then
   PATH="$SCRATCH/fakebin:$PATH" "$SANDBOX" llm --version >"$WORK/hijack.log" 2>&1
   if [[ -e "$SCRATCH/stub-ran" ]]; then
     fail "startup: sandbox-exec is not taken from PATH" "$WORK/hijack.log"
@@ -681,7 +712,7 @@ fi
 # — config.json, whose contents decide which server binary gets exec'd —
 # and re-resolving must notice and replace it. Cheap: 803 bytes.
 MLX_CFG="$STATE_DIR/models/$TEST_MLX_MODEL/config.json"
-if [[ -f "$MLX_CFG" ]] && command -v mlx_lm.server >/dev/null; then
+if [[ -f "$MLX_CFG" && -n "$MLX_SERVER" ]]; then
   cfg_before="$(shasum -a 256 "$MLX_CFG" | cut -d' ' -f1)"
   printf '{"tampered":true}' >"$MLX_CFG"
   # Drop the completion marker and the sidecar, i.e. force a real re-check.
@@ -701,7 +732,7 @@ fi
 # The profile used to allow exec across the whole package store. It now
 # names the entry point, its shebang interpreter and any wrapper
 # indirection, so an unrelated binary from the same store must be refused.
-MLX_BIN="$(command -v mlx_lm.server || true)"
+MLX_BIN="$MLX_SERVER"
 # A real file, not a shell builtin, and unrelated to the mlx chain.
 OTHER_BIN="$(realpath "$(command -v ls)" 2>/dev/null || true)"
 if [[ -n "$MLX_BIN" && "$OTHER_BIN" == "$PKG_STORE"/* ]]; then
