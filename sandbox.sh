@@ -47,6 +47,10 @@ PROG="${SANDBOXED_AI_PROG:-${0##*/}}"
 PORT=8080
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/sandboxed-ai"
 CACHE_DIR="$STATE_DIR/cache"
+# Parent of the per-subcommand scratch dirs; each cmd_* appends its own name
+# before exporting it. One shared scratch would be a read-write channel
+# between the sandboxes — pi could drop files where llm or a server reads
+# them, which is exactly what the isolation above is meant to prevent.
 TMPDIR="$STATE_DIR/tmp"
 # Weights are large and often belong on another volume; SANDBOXED_AI_MODELS
 # relocates them. Give it a real path, not a symlink: seatbelt matches
@@ -192,8 +196,16 @@ pkg_store_for() {
 resolve_darwin_dirs() {
   DARWIN_USER_TEMP_DIR="$(realpath "$(getconf DARWIN_USER_TEMP_DIR)" 2>/dev/null)" ||
     die "cannot resolve DARWIN_USER_TEMP_DIR"
-  DARWIN_USER_CACHE_DIR="$(realpath "$(getconf DARWIN_USER_CACHE_DIR)" 2>/dev/null)" ||
+  local cache
+  cache="$(realpath "$(getconf DARWIN_USER_CACHE_DIR)" 2>/dev/null)" ||
     die "cannot resolve DARWIN_USER_CACHE_DIR"
+  # Only Metal's own namespaces are granted, not the whole cache: the other
+  # ~200 directories there belong to unrelated applications. Created here
+  # because the servers get no write access to the parent, so they could not
+  # create them on a machine that has never run a Metal program.
+  DARWIN_METAL_CACHE="$cache/com.apple.metal"
+  DARWIN_METALFE_CACHE="$cache/com.apple.metalfe"
+  mkdir -p "$DARWIN_METAL_CACHE" "$DARWIN_METALFE_CACHE"
 }
 
 # The interpreter named by $1's shebang, resolved and without its
@@ -814,6 +826,7 @@ cmd_llama() {
     mmproj_dir="${mmproj_path%/*}"
   fi
 
+  TMPDIR="$TMPDIR/llama-server"
   mkdir -p "$CACHE_DIR" "$TMPDIR"
   export TMPDIR
   # Root ~-relative lookups inside the writable cache: the real HOME is
@@ -848,7 +861,8 @@ cmd_llama() {
     -D NET_TARGET="$NET_TARGET" \
     -D PKG_STORE="$pkg_store" \
     -D DARWIN_USER_TEMP_DIR="$DARWIN_USER_TEMP_DIR" \
-    -D DARWIN_USER_CACHE_DIR="$DARWIN_USER_CACHE_DIR" \
+    -D DARWIN_METAL_CACHE="$DARWIN_METAL_CACHE" \
+    -D DARWIN_METALFE_CACHE="$DARWIN_METALFE_CACHE" \
     -D LLAMA_SERVER="$llama_server" \
     -D MODEL_DIR="$model_dir" \
     -D MMPROJ_DIR="${mmproj_dir:-$model_dir}" \
@@ -886,6 +900,7 @@ cmd_mlx() {
   local model_dir
   model_dir="$(resolve_mlx_model "$MODEL")"
 
+  TMPDIR="$TMPDIR/mlx-server"
   mkdir -p "$CACHE_DIR" "$TMPDIR"
   export TMPDIR
   # Root ~-relative state (HF hub cache scans etc.) inside the writable
@@ -971,7 +986,8 @@ cmd_mlx() {
     -D NET_TARGET="$NET_TARGET" \
     -D PKG_STORE="$pkg_store" \
     -D DARWIN_USER_TEMP_DIR="$DARWIN_USER_TEMP_DIR" \
-    -D DARWIN_USER_CACHE_DIR="$DARWIN_USER_CACHE_DIR" \
+    -D DARWIN_METAL_CACHE="$DARWIN_METAL_CACHE" \
+    -D DARWIN_METALFE_CACHE="$DARWIN_METALFE_CACHE" \
     -D CA_FILE="$CA_FILE" \
     -D MLX_SERVER="$mlx_server" \
     -D MLX_INTERP="$MLX_INTERP" \
@@ -990,6 +1006,7 @@ cmd_pi() {
   # pi keeps its state under ~/.pi, so root HOME inside the project dir to
   # keep writable state local (and out of the read-only store / real HOME).
   local pi_home="$STATE_DIR/pi"
+  TMPDIR="$TMPDIR/pi"
   mkdir -p "$pi_home" "$CACHE_DIR" "$TMPDIR"
   export HOME="$pi_home"
   export TMPDIR
@@ -1017,7 +1034,6 @@ cmd_pi() {
   local pi_bin pkg_store
   pi_bin="$(resolve_binary "${PI:-}" pi PI)"
   pkg_store="$(pkg_store_for "$pi_bin")"
-  resolve_darwin_dirs
   resolve_tty
 
   printf 'Starting sandboxed pi:\n'
@@ -1038,8 +1054,6 @@ cmd_pi() {
     -D COMMON_SB="$PROFILES_DIR/common.sb" \
     -D CLIENT_SB="$PROFILES_DIR/client.sb" \
     -D PKG_STORE="$pkg_store" \
-    -D DARWIN_USER_TEMP_DIR="$DARWIN_USER_TEMP_DIR" \
-    -D DARWIN_USER_CACHE_DIR="$DARWIN_USER_CACHE_DIR" \
     -D WORKSPACE="$WORKSPACE" \
     -D PI_DIR="$pi_home" \
     -D PI_LLAMA_DIR="$PI_LLAMA_DIR" \
@@ -1056,6 +1070,7 @@ cmd_llm() {
   # Root ~-relative lookups inside llm's own state dir: the real HOME is
   # not granted, and under the env allowlist below nothing else defines it.
   export HOME="$LLM_USER_PATH"
+  TMPDIR="$TMPDIR/llm"
   mkdir -p "$LLM_USER_PATH" "$TMPDIR"
   export TMPDIR
 
@@ -1066,7 +1081,6 @@ cmd_llm() {
   local llm_bin pkg_store
   llm_bin="$(resolve_binary "${LLM:-}" llm LLM)"
   pkg_store="$(pkg_store_for "$llm_bin")"
-  resolve_darwin_dirs
   resolve_tty
 
   cd "$LLM_USER_PATH"
@@ -1077,8 +1091,6 @@ cmd_llm() {
     -D COMMON_SB="$PROFILES_DIR/common.sb" \
     -D CLIENT_SB="$PROFILES_DIR/client.sb" \
     -D PKG_STORE="$pkg_store" \
-    -D DARWIN_USER_TEMP_DIR="$DARWIN_USER_TEMP_DIR" \
-    -D DARWIN_USER_CACHE_DIR="$DARWIN_USER_CACHE_DIR" \
     -D LLM_USER_PATH="$LLM_USER_PATH" \
     -D TMPDIR="$TMPDIR" \
     -D TTY_DEV="$TTY_DEV" \

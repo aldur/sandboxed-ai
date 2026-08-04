@@ -103,17 +103,15 @@ PY="$(realpath "$(command -v python3)" 2>/dev/null || true)"
 # Run /bin/sh -c "$1" under pi.sb (the one profile that permits a shell),
 # with the workspace at $SCRATCH/ws. Grants mirror cmd_pi.
 pi_sh() {
-  mkdir -p "$SCRATCH/ws" "$STATE_DIR/pi" "$STATE_DIR/tmp"
+  mkdir -p "$SCRATCH/ws" "$STATE_DIR/pi" "$STATE_DIR/tmp/pi"
   sandbox-exec \
     -D COMMON_SB="$ROOT/profiles/common.sb" \
     -D CLIENT_SB="$ROOT/profiles/client.sb" \
     -D PKG_STORE="$PKG_STORE" \
-    -D DARWIN_USER_TEMP_DIR="$DARWIN_TMP" \
-    -D DARWIN_USER_CACHE_DIR="$DARWIN_CACHE" \
     -D WORKSPACE="$SCRATCH/ws" \
     -D PI_DIR="$STATE_DIR/pi" \
     -D PI_LLAMA_DIR="$STATE_DIR/pi" \
-    -D TMPDIR="$STATE_DIR/tmp" \
+    -D TMPDIR="$STATE_DIR/tmp/pi" \
     -D TTY_DEV="${PROBE_TTY:-/dev/null}" \
     -D NET_ADDR="localhost:$PORT" \
     -f "$ROOT/profiles/pi.sb" /bin/sh -c "$1" 2>/dev/null
@@ -228,6 +226,24 @@ if pi_sh "exec 3<>/dev/tcp/127.0.0.1/$PORT"; then
   ok "probe: outbound to the llama-server port is allowed"
 else
   fail "probe: outbound to the llama-server port is allowed"
+fi
+
+# The agent must not share writable state with the sandboxes that hold the
+# GPU and the weights. Two channels used to exist: Apple's per-user Metal
+# shader/PSO cache (which a server maps executable on its next start) and a
+# single shared scratch dir.
+if pi_sh "ls '$DARWIN_CACHE/com.apple.metal' || : > '$DARWIN_CACHE/com.apple.metal/probe'"; then
+  fail "probe: the agent cannot reach the Metal shader cache"
+else
+  ok "probe: the agent cannot reach the Metal shader cache"
+fi
+
+mkdir -p "$STATE_DIR/tmp/llama-server"
+if pi_sh ": > '$STATE_DIR/tmp/llama-server/probe'"; then
+  rm -f "$STATE_DIR/tmp/llama-server/probe"
+  fail "probe: the agent cannot write another sandbox's scratch dir"
+else
+  ok "probe: the agent cannot write another sandbox's scratch dir"
 fi
 
 # The TTY grant names one controlling terminal, so every *other* terminal
@@ -447,7 +463,7 @@ OTHER_BIN="$(realpath "$(command -v ls)" 2>/dev/null || true)"
 if [[ -n "$MLX_BIN" && "$OTHER_BIN" == "$PKG_STORE"/* ]]; then
   mlx_wrapped="${MLX_BIN%/*}/.${MLX_BIN##*/}-wrapped"
   [[ -x "$mlx_wrapped" ]] || mlx_wrapped=/dev/null
-  mkdir -p "$STATE_DIR/cache" "$STATE_DIR/tmp"
+  mkdir -p "$STATE_DIR/cache" "$STATE_DIR/tmp/mlx-server"
   if (cd "$STATE_DIR/cache" && sandbox-exec \
     -D COMMON_SB="$ROOT/profiles/common.sb" \
     -D SERVER_SB="$ROOT/profiles/server.sb" \
@@ -455,7 +471,8 @@ if [[ -n "$MLX_BIN" && "$OTHER_BIN" == "$PKG_STORE"/* ]]; then
     -D NET_TARGET="*:$PORT" \
     -D PKG_STORE="$PKG_STORE" \
     -D DARWIN_USER_TEMP_DIR="$DARWIN_TMP" \
-    -D DARWIN_USER_CACHE_DIR="$DARWIN_CACHE" \
+    -D DARWIN_METAL_CACHE="$DARWIN_CACHE/com.apple.metal" \
+    -D DARWIN_METALFE_CACHE="$DARWIN_CACHE/com.apple.metalfe" \
     -D CA_FILE=/dev/null \
     -D MLX_SERVER="$MLX_BIN" \
     -D MLX_INTERP=/dev/null \
@@ -463,7 +480,7 @@ if [[ -n "$MLX_BIN" && "$OTHER_BIN" == "$PKG_STORE"/* ]]; then
     -D MLX_WRAPPED_INTERP=/dev/null \
     -D MODEL_DIR="$STATE_DIR/models" \
     -D CACHE_DIR="$STATE_DIR/cache" \
-    -D TMPDIR="$STATE_DIR/tmp" \
+    -D TMPDIR="$STATE_DIR/tmp/mlx-server" \
     -f "$ROOT/profiles/mlx-server.sb" \
     "$OTHER_BIN" >/dev/null 2>&1); then
     fail "probe: mlx sandbox refuses unrelated store binaries ($OTHER_BIN ran)"
@@ -479,7 +496,7 @@ fi
 # lookup once escalated into mDNSResponder and tripped the fatal
 # network-outbound deny (fixed by the hosts-file grant + plain deny).
 if [[ -n "$PY" ]]; then
-  mkdir -p "$STATE_DIR/cache" "$STATE_DIR/tmp"
+  mkdir -p "$STATE_DIR/cache" "$STATE_DIR/tmp/mlx-server"
   if (cd "$STATE_DIR/cache" && sandbox-exec \
     -D COMMON_SB="$ROOT/profiles/common.sb" \
     -D SERVER_SB="$ROOT/profiles/server.sb" \
@@ -487,7 +504,8 @@ if [[ -n "$PY" ]]; then
     -D NET_TARGET="*:$PORT" \
     -D PKG_STORE="$PKG_STORE" \
     -D DARWIN_USER_TEMP_DIR="$DARWIN_TMP" \
-    -D DARWIN_USER_CACHE_DIR="$DARWIN_CACHE" \
+    -D DARWIN_METAL_CACHE="$DARWIN_CACHE/com.apple.metal" \
+    -D DARWIN_METALFE_CACHE="$DARWIN_CACHE/com.apple.metalfe" \
     -D CA_FILE=/dev/null \
     -D MLX_SERVER="$PY" \
     -D MLX_INTERP=/dev/null \
@@ -495,7 +513,7 @@ if [[ -n "$PY" ]]; then
     -D MLX_WRAPPED_INTERP=/dev/null \
     -D MODEL_DIR="$STATE_DIR/models" \
     -D CACHE_DIR="$STATE_DIR/cache" \
-    -D TMPDIR="$STATE_DIR/tmp" \
+    -D TMPDIR="$STATE_DIR/tmp/mlx-server" \
     -f "$ROOT/profiles/mlx-server.sb" \
     "$PY" -I -c 'import socket; socket.getfqdn("127.0.0.1")' 2>/dev/null); then
     ok "probe: getfqdn survives under mlx-server.sb"

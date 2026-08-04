@@ -51,6 +51,19 @@
   (subpath (param "CACHE_DIR"))
   (subpath (param "TMPDIR")))
 
+;; ── Apple's per-user temp/cache (servers only) ───────────
+;; Metal and CoreFoundation reach these via confstr(_CS_DARWIN_USER_*_DIR);
+;; TMPDIR cannot redirect them, and shader compilation needs to map from
+;; them executable. Granted here rather than in common.sb so the clients —
+;; which have no GPU work to do — cannot reach the shader/PSO cache that a
+;; server later loads while holding the GPU and the weights. Within the
+;; cache only Metal's own two namespaces are granted; the other ~200 belong
+;; to unrelated applications. sandbox.sh creates them if absent.
+(allow file-read* file-write* file-map-executable file-lock
+  (subpath (param "DARWIN_USER_TEMP_DIR"))
+  (subpath (param "DARWIN_METAL_CACHE"))
+  (subpath (param "DARWIN_METALFE_CACHE")))
+
 ;; ── Sandbox extensions for MTLCompilerService ──────────
 ;; Metal shader compilation runs in an XPC service (MTLCompilerService).
 ;; It needs sandbox extensions issued by the server to access paths,
@@ -60,7 +73,8 @@
     (extension-class "com.apple.app-sandbox.read-write")
     (require-any
       (subpath (param "DARWIN_USER_TEMP_DIR"))
-      (subpath (param "DARWIN_USER_CACHE_DIR")))))
+      (subpath (param "DARWIN_METAL_CACHE"))
+      (subpath (param "DARWIN_METALFE_CACHE")))))
 
 ;; ── Shared memory (Metal command buffers) ────────────────
 (allow ipc-posix-shm-read-data
