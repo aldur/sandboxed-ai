@@ -1,0 +1,40 @@
+name: e2e
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Superseded runs only waste the (expensive) macOS runners — cancel them.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: e2e
+    # Apple-silicon runner: seatbelt (sandbox-exec) and Metal are available,
+    # so the servers run real GPU inference inside the real sandboxes.
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+
+      # The tiny test models (~200 MB total) are re-downloaded from
+      # Hugging Face when this misses.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.local/state/sandboxed-ai/models
+          key: test-models-${{ hashFiles('tests/e2e.sh') }}
+
+      # Builds the devshell first: llama-cpp is version-bumped past the
+      # nixpkgs binary cache, so the first uncached run compiles it.
+      - name: Run e2e tests
+        run: nix develop --command tests/e2e.sh
