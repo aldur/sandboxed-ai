@@ -34,12 +34,12 @@
 (allow file-read*
   (subpath (param "MODEL_DIR")))
 
-;; Metal shader / PSO cache + this server's own scratch. TMPDIR is kept
-;; although the current tests never write there: Python's tempfile is
-;; where mlx-vlm spools uploaded images.
+;; Metal shader / PSO cache. No TMPDIR: the one concrete use anyone could
+;; name for it — Python's tempfile, where mlx-vlm was assumed to spool
+;; uploaded images — does not happen. Both engines answer questions about
+;; a 3.2 MB image with this grant removed.
 (allow file-read* file-write* file-lock
-  (subpath (param "CACHE_DIR"))
-  (subpath (param "TMPDIR")))
+  (subpath (param "CACHE_DIR")))
 
 ;; ── Apple's per-user temp/cache (servers only) ───────────
 ;; Metal and CoreFoundation reach these via confstr(_CS_DARWIN_USER_*_DIR);
