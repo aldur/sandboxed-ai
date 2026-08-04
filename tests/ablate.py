@@ -292,6 +292,8 @@ def t_shell(sandbox):
             "-D", "PKG_STORE=/nix",
             "-D", "HOME_DIR=%s" % os.path.expanduser("~"),
             "-D", "HOME_PARENT=%s" % os.path.dirname(os.path.expanduser("~")),
+            "-D", "STDOUT_PATH=/dev/null",
+            "-D", "STDERR_PATH=/dev/null",
             "-D", "WORKSPACE=%s" % ws,
             "-D", "PI_DIR=%s/pi" % state,
             "-D", "PI_LLAMA_DIR=%s/pi" % state,

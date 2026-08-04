@@ -58,3 +58,12 @@
   (subpath (param "HOME_DIR"))
   (literal (param "HOME_PARENT"))
   (subpath "/private/var/folders"))
+
+;; ── Inherited stdout/stderr ──────────────────────────────
+;; Where the caller redirected them, when that is a file: the descriptor
+;; is already open, but a runtime that stats or reopens its own stdio (as
+;; Node does at startup) needs the path to resolve. sandbox.sh passes
+;; /dev/null when they are a pipe or a terminal.
+(allow file-read-metadata file-write-data
+  (literal (param "STDOUT_PATH"))
+  (literal (param "STDERR_PATH")))

@@ -803,6 +803,29 @@ seed_hf_cache() {
 # fixed order: COMMON_SB, SERVER_SB/CLIENT_SB, NET_*, PKG_STORE,
 # DARWIN_USER_*, per-command params, -f, argv.
 
+# The files stdout and stderr point at, when they are regular files. A
+# sandboxed process inherits those descriptors, and Node stats and reopens
+# them while starting up: with the path unreachable it aborts before
+# running any code. Nothing is resolvable through /dev/fd on macOS, so ask
+# lsof, and only when the descriptor is a file at all — a pipe or a
+# terminal needs none of this. /dev/null stands in for "not a file", since
+# the profiles reference the parameters unconditionally.
+resolve_stdio() {
+  STDOUT_PATH=/dev/null
+  STDERR_PATH=/dev/null
+  command -v lsof >/dev/null || return 0
+  local fd var path
+  for fd in 1 2; do
+    [[ -f "/dev/fd/$fd" ]] || continue
+    path="$(lsof -a -d "$fd" -p $$ -Fn 2>/dev/null | grep '^n' | cut -c2- | head -1)" || continue
+    [[ -n "$path" && "$path" == /* ]] || continue
+    var="STDOUT_PATH"
+    [[ "$fd" == 2 ]] && var="STDERR_PATH"
+    printf -v "$var" '%s' "$path"
+  done
+  return 0
+}
+
 # die unless the option $1 is followed by a value.
 need_arg() { [[ $# -ge 2 ]] || die "$1 requires an argument"; }
 
@@ -955,6 +978,7 @@ cmd_llama() {
   # not granted, and under the env allowlist below nothing else defines it.
   export HOME="$CACHE_DIR"
   resolve_darwin_dirs
+  resolve_stdio
 
   local -a server_args=()
   if [[ -n "$help_only" ]]; then
@@ -989,6 +1013,8 @@ cmd_llama() {
     -D PKG_STORE="$pkg_store" \
     -D HOME_DIR="$HOME_DIR" \
     -D HOME_PARENT="$HOME_PARENT" \
+    -D STDOUT_PATH="$STDOUT_PATH" \
+    -D STDERR_PATH="$STDERR_PATH" \
     -D DARWIN_USER_TEMP_DIR="$DARWIN_USER_TEMP_DIR" \
     -D DARWIN_METAL_CACHE="$DARWIN_METAL_CACHE" \
     -D DARWIN_METALFE_CACHE="$DARWIN_METALFE_CACHE" \
@@ -1108,6 +1134,7 @@ cmd_mlx() {
   pkg_store="$(pkg_store_for "$mlx_server")"
   resolve_ca_file
   resolve_darwin_dirs
+  resolve_stdio
   resolve_mlx_exec "$mlx_server"
 
   local -a server_args=()
@@ -1149,6 +1176,8 @@ cmd_mlx() {
     -D PKG_STORE="$pkg_store" \
     -D HOME_DIR="$HOME_DIR" \
     -D HOME_PARENT="$HOME_PARENT" \
+    -D STDOUT_PATH="$STDOUT_PATH" \
+    -D STDERR_PATH="$STDERR_PATH" \
     -D DARWIN_USER_TEMP_DIR="$DARWIN_USER_TEMP_DIR" \
     -D DARWIN_METAL_CACHE="$DARWIN_METAL_CACHE" \
     -D DARWIN_METALFE_CACHE="$DARWIN_METALFE_CACHE" \
@@ -1199,6 +1228,7 @@ cmd_pi() {
   pi_bin="$(resolve_binary "${PI:-}" pi PI)"
   pkg_store="$(pkg_store_for "$pi_bin")"
   resolve_tty
+  resolve_stdio
 
   printf 'Starting sandboxed pi:\n'
   info "binary:" "$pi_bin"
@@ -1220,6 +1250,8 @@ cmd_pi() {
     -D PKG_STORE="$pkg_store" \
     -D HOME_DIR="$HOME_DIR" \
     -D HOME_PARENT="$HOME_PARENT" \
+    -D STDOUT_PATH="$STDOUT_PATH" \
+    -D STDERR_PATH="$STDERR_PATH" \
     -D WORKSPACE="$WORKSPACE" \
     -D PI_DIR="$pi_home" \
     -D PI_LLAMA_DIR="$PI_LLAMA_DIR" \
@@ -1248,6 +1280,7 @@ cmd_llm() {
   llm_bin="$(resolve_binary "${LLM:-}" llm LLM)"
   pkg_store="$(pkg_store_for "$llm_bin")"
   resolve_tty
+  resolve_stdio
 
   cd "$LLM_USER_PATH"
 
@@ -1259,6 +1292,8 @@ cmd_llm() {
     -D PKG_STORE="$pkg_store" \
     -D HOME_DIR="$HOME_DIR" \
     -D HOME_PARENT="$HOME_PARENT" \
+    -D STDOUT_PATH="$STDOUT_PATH" \
+    -D STDERR_PATH="$STDERR_PATH" \
     -D LLM_USER_PATH="$LLM_USER_PATH" \
     -D TMPDIR="$TMPDIR" \
     -D TTY_DEV="$TTY_DEV" \

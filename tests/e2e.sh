@@ -143,6 +143,8 @@ pi_sh() {
     -D PKG_STORE="$PKG_STORE" \
     -D HOME_DIR="$HOME" \
     -D HOME_PARENT="$(dirname "$HOME")" \
+    -D STDOUT_PATH=/dev/null \
+    -D STDERR_PATH=/dev/null \
     -D WORKSPACE="$SCRATCH/ws" \
     -D PI_DIR="$STATE_DIR/pi" \
     -D PI_LLAMA_DIR="$STATE_DIR/pi" \
@@ -333,7 +335,7 @@ fi
 
 # ── llm client against the running server ─────────────────
 if [[ -n "$LLM" ]]; then
-  if "$SANDBOX" llm 'Say OK' >"$WORK/llm.out" 2>&1 && [[ -s "$WORK/llm.out" ]]; then
+  if "$SANDBOX" llm 'Say OK' 2>&1 | tee "$WORK/llm.out" >/dev/null && [[ -s "$WORK/llm.out" ]]; then
     ok "llm answers through its sandbox"
   else
     fail "llm answers through its sandbox" "$WORK/llm.out"
@@ -347,7 +349,12 @@ fi
 # not export it; the nix-built wrapper bakes it in).
 if [[ -n "${PI_LLAMA_DIR:-}" && -n "$PI" ]]; then
   mkdir -p "$SCRATCH/ws"
-  if "$SANDBOX" pi -w "$SCRATCH/ws" -p 'Say OK' >"$WORK/pi.out" 2>&1 &&
+  # Captured through a pipe, not a file redirect: a sandboxed tool inherits
+  # these fds, and the profile has no reason to grant whatever directory the
+  # caller happens to redirect into ($TMPDIR under `nix develop` is
+  # /tmp/nix-shell.*). Node aborts at startup when it cannot reach its
+  # stdout, so this is not a hypothetical.
+  if "$SANDBOX" pi -w "$SCRATCH/ws" -p 'Say OK' 2>&1 | tee "$WORK/pi.out" >/dev/null &&
     [[ -s "$WORK/pi.out" ]]; then
     ok "pi answers through its sandbox"
   else
@@ -631,7 +638,7 @@ fi
 ws_reject() { # $1 label, rest: sandbox.sh pi args
   local label="$1"
   shift
-  if "$SANDBOX" pi "$@" -p hi >"$WORK/ws.log" 2>&1; then
+  if "$SANDBOX" pi "$@" -p hi 2>&1 | tee "$WORK/ws.log" >/dev/null; then
     fail "workspace: $label is refused" "$WORK/ws.log"
   elif grep -q '^error: refusing to run\|^error: workspace overlaps' "$WORK/ws.log"; then
     ok "workspace: $label is refused"
@@ -650,7 +657,7 @@ mkdir -p "$SCRATCH/realws"
 ln -sfn "$SCRATCH/realws" "$SCRATCH/linkws"
 # Asserted on the startup banner, not the exit status: no server is running
 # at this point, so pi itself exits non-zero either way.
-"$SANDBOX" pi -w "$SCRATCH/linkws" -p hi >"$WORK/ws-link.log" 2>&1
+"$SANDBOX" pi -w "$SCRATCH/linkws" -p hi 2>&1 | tee "$WORK/ws-link.log" >/dev/null
 if grep -q "workspace: *$SCRATCH/realws" "$WORK/ws-link.log"; then
   ok "workspace: a symlinked workspace is canonicalized"
 else
@@ -774,6 +781,8 @@ if [[ -n "$MLX_BIN" && "$OTHER_BIN" == "$PKG_STORE"/* ]]; then
     -D PKG_STORE="$PKG_STORE" \
     -D HOME_DIR="$HOME" \
     -D HOME_PARENT="$(dirname "$HOME")" \
+    -D STDOUT_PATH=/dev/null \
+    -D STDERR_PATH=/dev/null \
     -D DARWIN_USER_TEMP_DIR="$DARWIN_TMP" \
     -D DARWIN_METAL_CACHE="$DARWIN_CACHE/com.apple.metal" \
     -D DARWIN_METALFE_CACHE="$DARWIN_CACHE/com.apple.metalfe" \
@@ -809,6 +818,8 @@ if [[ -n "$PY" ]]; then
     -D PKG_STORE="$PKG_STORE" \
     -D HOME_DIR="$HOME" \
     -D HOME_PARENT="$(dirname "$HOME")" \
+    -D STDOUT_PATH=/dev/null \
+    -D STDERR_PATH=/dev/null \
     -D DARWIN_USER_TEMP_DIR="$DARWIN_TMP" \
     -D DARWIN_METAL_CACHE="$DARWIN_CACHE/com.apple.metal" \
     -D DARWIN_METALFE_CACHE="$DARWIN_CACHE/com.apple.metalfe" \
@@ -845,6 +856,8 @@ if [[ -n "$PY" ]]; then
     -D PKG_STORE="$PKG_STORE" \
     -D HOME_DIR="$HOME" \
     -D HOME_PARENT="$(dirname "$HOME")" \
+    -D STDOUT_PATH=/dev/null \
+    -D STDERR_PATH=/dev/null \
     -D DARWIN_USER_TEMP_DIR="$DARWIN_TMP" \
     -D DARWIN_METAL_CACHE="$DARWIN_CACHE/com.apple.metal" \
     -D DARWIN_METALFE_CACHE="$DARWIN_CACHE/com.apple.metalfe" \
