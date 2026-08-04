@@ -313,6 +313,33 @@ else
   skip "mlx-server (unix socket)" "mlx-lm build lacks the unix-socket patch — reload the devshell"
 fi
 
+# ── `set -e` does not swallow the run ─────────────────────
+# Helpers whose last statement is a short-circuiting test return 1, and a
+# bare call under `set -euo pipefail` then kills the script with no
+# message. Both shapes below used to abort mid-run:
+#   sandbox_env — last allowlisted variable unset (NIX_SSL_CERT_FILE is
+#     unset on a Homebrew install), aborting *after* the startup banner
+#   split_lines — empty listing, which made the "cannot resolve quant"
+#     error unreachable
+if command -v mlx_lm.server >/dev/null; then
+  if env -u NIX_SSL_CERT_FILE "$SANDBOX" mlx-server --model "$TEST_MLX_MODEL" --help \
+    >"$WORK/unset-env.log" 2>&1; then
+    ok "startup: an unset allowlisted variable does not abort the run"
+  else
+    fail "startup: an unset allowlisted variable does not abort the run" "$WORK/unset-env.log"
+  fi
+else
+  skip "startup: an unset allowlisted variable does not abort the run" "mlx_lm.server not on PATH"
+fi
+
+# A repo with no GGUF listing must reach its error message, not exit blank.
+"$SANDBOX" llama-server --model no-such-org/no-such-repo-xyz:Q4_K_M >"$WORK/no-listing.log" 2>&1
+if grep -q 'cannot resolve quant' "$WORK/no-listing.log"; then
+  ok "startup: an unresolvable model reports why"
+else
+  fail "startup: an unresolvable model reports why" "$WORK/no-listing.log"
+fi
+
 # ── system.sb's wholesale grants stay re-armed ────────────
 # system.sb (imported by common.sb) ends with a bare (allow sysctl-read)
 # and an unfiltered process-info grant. common.sb denies both so the

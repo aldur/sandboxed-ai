@@ -18,7 +18,10 @@ set -euo pipefail
 # ${var,,}, associative arrays, namerefs, and empty arrays under `set -u`
 # need a modern bash (nix and homebrew both ship 5.x).
 ((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4))) ||
-  { printf 'error: bash >= 4.4 required (found %s)\n' "$BASH_VERSION" >&2; exit 1; }
+  {
+    printf 'error: bash >= 4.4 required (found %s)\n' "$BASH_VERSION" >&2
+    exit 1
+  }
 # For the delimited quant-label match in select_gguf_files.
 shopt -s extglob
 
@@ -65,6 +68,7 @@ split_lines() {
   _lines=()
   local line
   while IFS= read -r line; do [[ -n "$line" ]] && _lines+=("$line"); done <<<"$1"
+  return 0
 }
 
 usage() {
@@ -333,6 +337,7 @@ hf_load_digests() {
       HF_DIGEST["$path"]="gitsha1:${BASH_REMATCH[1]}"
     fi
   done < <(sed 's/},{"type"/}\n{"type"/g' <<<"$json")
+  return 0 # best-effort by contract: callers fall back when it finds nothing
 }
 
 # Download $2 from repo $1 into $3 (resumable), verifying it against the
@@ -727,6 +732,7 @@ sandbox_env() {
   for var in "${ENV_BASE[@]}" "$@"; do
     [[ -n "${!var:-}" ]] && _env+=("$var=${!var}")
   done
+  return 0
 }
 
 # Consume leading -w/--workspace DIR (last wins); sets WORKSPACE and ARGS
@@ -748,10 +754,25 @@ cmd_llama() {
   local socket=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-    --model) need_arg "$@"; MODEL="$2"; shift 2 ;;
-    --mmproj) need_arg "$@"; MMPROJ="$2"; shift 2 ;;
-    --socket) need_arg "$@"; socket="$2"; shift 2 ;;
-    *) extra_args+=("$1"); shift ;;
+    --model)
+      need_arg "$@"
+      MODEL="$2"
+      shift 2
+      ;;
+    --mmproj)
+      need_arg "$@"
+      MMPROJ="$2"
+      shift 2
+      ;;
+    --socket)
+      need_arg "$@"
+      socket="$2"
+      shift 2
+      ;;
+    *)
+      extra_args+=("$1")
+      shift
+      ;;
     esac
   done
   [[ -n "${MODEL:-}" ]] || die "no model specified — use --model or set MODEL env var"
@@ -825,9 +846,20 @@ cmd_mlx() {
   local socket=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
-    --model) need_arg "$@"; MODEL="$2"; shift 2 ;;
-    --socket) need_arg "$@"; socket="$2"; shift 2 ;;
-    *) extra_args+=("$1"); shift ;;
+    --model)
+      need_arg "$@"
+      MODEL="$2"
+      shift 2
+      ;;
+    --socket)
+      need_arg "$@"
+      socket="$2"
+      shift 2
+      ;;
+    *)
+      extra_args+=("$1")
+      shift
+      ;;
     esac
   done
   [[ -n "${MODEL:-}" ]] || die "no model specified — use --model or set MODEL env var"
