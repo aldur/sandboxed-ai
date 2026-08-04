@@ -159,6 +159,21 @@ pkg_store_for() {
   esac
 }
 
+# The per-user temp/cache dirs Apple frameworks (Metal, CoreFoundation)
+# reach via confstr(_CS_DARWIN_USER_TEMP_DIR / _CS_DARWIN_USER_CACHE_DIR);
+# TMPDIR cannot redirect them. common.sb grants exactly these two, keeping
+# the rest of /private/var/folders — every other app's temp/cache state —
+# out of reach. getconf prints them /var-prefixed with a trailing slash;
+# seatbelt matches resolved paths, so realpath both resolves the /var
+# symlink and normalizes the path. Sets DARWIN_USER_TEMP_DIR and
+# DARWIN_USER_CACHE_DIR.
+resolve_darwin_dirs() {
+  DARWIN_USER_TEMP_DIR="$(realpath "$(getconf DARWIN_USER_TEMP_DIR)" 2>/dev/null)" ||
+    die "cannot resolve DARWIN_USER_TEMP_DIR"
+  DARWIN_USER_CACHE_DIR="$(realpath "$(getconf DARWIN_USER_CACHE_DIR)" 2>/dev/null)" ||
+    die "cannot resolve DARWIN_USER_CACHE_DIR"
+}
+
 # The CA bundle the mlx profile grants read on: huggingface_hub builds an
 # SSL context even in offline mode, and nixpkgs' certifi opens
 # NIX_SSL_CERT_FILE verbatim (/no-cert-file.crt is its "unset" marker). On
@@ -546,7 +561,8 @@ seed_hf_cache() {
 # getcwd() must resolve) and ends in `exec sandbox-exec` with every grant
 # spelled out at the call site — keep it that way: the full parameter set of
 # every sandbox must stay auditable where it is used. The -D blocks share a
-# fixed order: COMMON_SB, NET_*, PKG_STORE, per-command params, -f, argv.
+# fixed order: COMMON_SB, NET_*, PKG_STORE, DARWIN_USER_*, per-command
+# params, -f, argv.
 
 # die unless the option $1 is followed by a value.
 need_arg() { [[ $# -ge 2 ]] || die "$1 requires an argument"; }
@@ -598,6 +614,7 @@ cmd_llama() {
 
   mkdir -p "$CACHE_DIR" "$TMPDIR"
   export TMPDIR
+  resolve_darwin_dirs
 
   local -a server_args=(--model "$model_path" --alias "$model_alias" --port "$PORT")
   [[ -n "$mmproj_path" ]] && server_args+=(--mmproj "$mmproj_path")
@@ -622,6 +639,8 @@ cmd_llama() {
     -D NET_SB="$NET_SB" \
     -D NET_TARGET="$NET_TARGET" \
     -D PKG_STORE="$pkg_store" \
+    -D DARWIN_USER_TEMP_DIR="$DARWIN_USER_TEMP_DIR" \
+    -D DARWIN_USER_CACHE_DIR="$DARWIN_USER_CACHE_DIR" \
     -D LLAMA_SERVER="$llama_server" \
     -D MODEL_DIR="$model_dir" \
     -D MMPROJ_DIR="${mmproj_dir:-$model_dir}" \
@@ -664,6 +683,9 @@ cmd_mlx() {
   # server holds GPU and model access, so refuse user-site imports outright
   # rather than rely on the directory staying unwritable.
   export PYTHONNOUSERSITE=1
+  # An inherited PYTHONPATH (a nix devshell exports one) shadows the
+  # server's own bundled site-packages; the wrapper knows its deps.
+  unset PYTHONPATH
 
   # Serve by repo id when the spec is an HF repo: the seeded cache entry
   # lets both servers resolve that id offline and list it on /v1/models, so
@@ -697,6 +719,7 @@ cmd_mlx() {
   local pkg_store
   pkg_store="$(pkg_store_for "$mlx_server")"
   resolve_ca_file
+  resolve_darwin_dirs
 
   printf 'Starting sandboxed %s:\n' "${mlx_server##*/}"
   info "binary:" "$mlx_server"
@@ -725,6 +748,8 @@ cmd_mlx() {
     -D NET_SB="$NET_SB" \
     -D NET_TARGET="$NET_TARGET" \
     -D PKG_STORE="$pkg_store" \
+    -D DARWIN_USER_TEMP_DIR="$DARWIN_USER_TEMP_DIR" \
+    -D DARWIN_USER_CACHE_DIR="$DARWIN_USER_CACHE_DIR" \
     -D CA_FILE="$CA_FILE" \
     -D MODEL_DIR="$model_dir" \
     -D CACHE_DIR="$CACHE_DIR" \
@@ -766,6 +791,7 @@ cmd_pi() {
   local pi_bin pkg_store
   pi_bin="$(resolve_binary "${PI:-}" pi PI)"
   pkg_store="$(pkg_store_for "$pi_bin")"
+  resolve_darwin_dirs
 
   printf 'Starting sandboxed pi:\n'
   info "binary:" "$pi_bin"
@@ -782,6 +808,8 @@ cmd_pi() {
   exec sandbox-exec \
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
     -D PKG_STORE="$pkg_store" \
+    -D DARWIN_USER_TEMP_DIR="$DARWIN_USER_TEMP_DIR" \
+    -D DARWIN_USER_CACHE_DIR="$DARWIN_USER_CACHE_DIR" \
     -D WORKSPACE="$WORKSPACE" \
     -D PI_DIR="$pi_home" \
     -D PI_LLAMA_DIR="$PI_LLAMA_DIR" \
@@ -794,6 +822,10 @@ cmd_pi() {
 cmd_llm() {
   export LLM_USER_PATH="$STATE_DIR/llm"
   export OPENAI_API_KEY="${OPENAI_API_KEY:-dummy}"
+  # An inherited PYTHONPATH (a nix devshell exports one) shadows the llm
+  # wrapper's own bundled site-packages — with a mismatched interpreter
+  # version it breaks native imports outright.
+  unset PYTHONPATH
   mkdir -p "$LLM_USER_PATH" "$TMPDIR"
   export TMPDIR
 
@@ -804,12 +836,15 @@ cmd_llm() {
   local llm_bin pkg_store
   llm_bin="$(resolve_binary "${LLM:-}" llm LLM)"
   pkg_store="$(pkg_store_for "$llm_bin")"
+  resolve_darwin_dirs
 
   cd "$LLM_USER_PATH"
 
   exec sandbox-exec \
     -D COMMON_SB="$SCRIPT_DIR/common.sb" \
     -D PKG_STORE="$pkg_store" \
+    -D DARWIN_USER_TEMP_DIR="$DARWIN_USER_TEMP_DIR" \
+    -D DARWIN_USER_CACHE_DIR="$DARWIN_USER_CACHE_DIR" \
     -D LLM_USER_PATH="$LLM_USER_PATH" \
     -D TMPDIR="$TMPDIR" \
     -f "$SCRIPT_DIR/llm.sb" \
