@@ -166,6 +166,96 @@ else
   skip "env: caller credentials do not reach the sandbox" "server not running"
 fi
 
+# ── Vision: a real image through both engines ─────────────
+# Loading a projector proves nothing about decoding an image, so send one.
+# The 256M models are weak, but "is there an answer, and did the server
+# actually decode an image" is what the sandbox is on the hook for.
+make_image() { # $1 output path
+  "$PY" - "$1" <<'PYEOF'
+import zlib, struct, base64, sys
+W = H = 64
+rows = b""
+for y in range(H):
+    rows += b"\x00" + b"".join(
+        b"\xd0\x20\x20" if 16 <= x < 48 and 16 <= y < 48 else b"\xff\xff\xff"
+        for x in range(W))
+def chunk(t, d):
+    c = t + d
+    return struct.pack(">I", len(d)) + c + struct.pack(">I", zlib.crc32(c) & 0xffffffff)
+png = (b"\x89PNG\r\n\x1a\n"
+       + chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0))
+       + chunk(b"IDAT", zlib.compress(rows, 9)) + chunk(b"IEND", b""))
+open(sys.argv[1], "w").write(base64.b64encode(png).decode())
+PYEOF
+}
+
+image_chat() { # $1 b64 file, $2 out file, $3 optional model id
+  "$PY" - "$1" "$2" "${3:-}" <<'PYEOF'
+import json, sys, urllib.request
+b64, out, model = open(sys.argv[1]).read(), sys.argv[2], sys.argv[3]
+body = {"messages": [{"role": "user", "content": [
+    {"type": "text", "text": "What color is the square?"},
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64," + b64}}]}],
+    "max_tokens": 20}
+if model:
+    body["model"] = model
+req = urllib.request.Request("http://127.0.0.1:8080/v1/chat/completions",
+      data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
+try:
+    r = json.load(urllib.request.urlopen(req, timeout=300))
+    text = r["choices"][0]["message"]["content"]
+    open(out, "w").write(text)
+    sys.exit(0 if text.strip() else 1)
+except Exception as e:
+    open(out, "w").write("%s: %s" % (type(e).__name__, e))
+    sys.exit(1)
+PYEOF
+}
+
+if [[ -n "$PY" ]] && [[ -n "${TEST_VISION_MODEL:-}" || 1 ]]; then
+  VISION_MODEL="${TEST_VISION_MODEL:-ggml-org/SmolVLM-256M-Instruct-GGUF:Q8_0}"
+  make_image "$WORK/img.b64"
+  stop_server
+  # -lv 6 so the log records "image decoded": a text-only answer would
+  # otherwise pass this test without the image ever being looked at.
+  start_server llama-vision llama-server --model "$VISION_MODEL" --mmproj "$VISION_MODEL" -lv 6
+  if wait_http "http://127.0.0.1:$PORT/health" 240; then
+    if image_chat "$WORK/img.b64" "$WORK/vision-answer.txt" &&
+      grep -q 'image decoded' "$WORK/llama-vision.log"; then
+      ok "llama-server answers about an image ($(tr -d '\n' <"$WORK/vision-answer.txt" | cut -c1-40))"
+    else
+      fail "llama-server answers about an image" "$WORK/vision-answer.txt"
+    fi
+  else
+    fail "llama-server answers about an image" "$WORK/llama-vision.log"
+  fi
+  stop_server
+fi
+
+# mlx-vlm, which is a different decoder path (Pillow rather than mtmd) and
+# needs the patched build the flake produces.
+MLX_VLM="${MLX_VLM_SERVER:-$(command -v mlx_vlm.server 2>/dev/null || true)}"
+if [[ -n "$PY" && -n "$MLX_VLM" ]]; then
+  MLX_VISION_MODEL="${TEST_MLX_VISION_MODEL:-mlx-community/SmolVLM-256M-Instruct-4bit}"
+  MLX_VLM_SERVER="$MLX_VLM" start_server mlx-vision mlx-server --model "$MLX_VISION_MODEL"
+  if wait_http "http://127.0.0.1:$PORT/v1/models" 300; then
+    if image_chat "$WORK/img.b64" "$WORK/mlx-vision-answer.txt" "$MLX_VISION_MODEL"; then
+      ok "mlx_vlm.server answers about an image ($(tr -d '\n' <"$WORK/mlx-vision-answer.txt" | cut -c1-40))"
+    else
+      fail "mlx_vlm.server answers about an image" "$WORK/mlx-vision-answer.txt"
+    fi
+  else
+    fail "mlx_vlm.server answers about an image" "$WORK/mlx-vision.log"
+  fi
+  stop_server
+else
+  skip "mlx_vlm.server answers about an image" "mlx_vlm.server not available"
+fi
+
+# Restore the text server the later client tests talk to.
+start_server llama-tcp llama-server --model "$TEST_GGUF_MODEL"
+wait_http "http://127.0.0.1:$PORT/health" 180 || true
+
 # ── Cold Metal cache (shader compilation) ─────────────────
 # With a warm cache llama.cpp loads a precompiled Metal library and never
 # reaches MTLCompilerService, so a missing XPC grant stays invisible until

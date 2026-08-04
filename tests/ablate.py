@@ -194,7 +194,7 @@ def stop(p):
         pass
 
 
-def server_test(sandbox, args, ready_url, chat_url, model=None, needs_gpu=False):
+def server_test(sandbox, args, ready_url, chat_url, model=None, needs_gpu=False, image=False):
     logpath = os.path.join(RUN, "server.log")
     log = open(logpath, "w")
     p = subprocess.Popen(
@@ -207,6 +207,8 @@ def server_test(sandbox, args, ready_url, chat_url, model=None, needs_gpu=False)
                 return False
             if http_ok(ready_url):
                 if not chat_ok(chat_url, model):
+                    return False
+                if image and not image_ok(chat_url, model):
                     return False
                 if needs_gpu:
                     # llama.cpp falls back to CPU when Metal is unavailable
@@ -260,15 +262,63 @@ def mmproj_elsewhere():
     return dst
 
 
+IMAGE_B64 = None
+
+
+def test_image():
+    """A 64x64 PNG as base64: a red square on white."""
+    global IMAGE_B64
+    if IMAGE_B64 is None:
+        import zlib, struct, base64
+        W = H = 64
+        rows = b""
+        for y in range(H):
+            rows += b"\x00" + b"".join(
+                b"\xd0\x20\x20" if 16 <= x < 48 and 16 <= y < 48 else b"\xff\xff\xff"
+                for x in range(W))
+
+        def chunk(t, d):
+            c = t + d
+            return struct.pack(">I", len(d)) + c + struct.pack(">I", zlib.crc32(c) & 0xFFFFFFFF)
+
+        png = (b"\x89PNG\r\n\x1a\n"
+               + chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0))
+               + chunk(b"IDAT", zlib.compress(rows, 9)) + chunk(b"IEND", b""))
+        IMAGE_B64 = base64.b64encode(png).decode()
+    return IMAGE_B64
+
+
+def image_ok(url, model=None):
+    """Ask about an image; true only if a non-empty answer comes back."""
+    import json
+
+    body = {"messages": [{"role": "user", "content": [
+        {"type": "text", "text": "What color is the square?"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + test_image()}}]}],
+        "max_tokens": 20}
+    if model:
+        body["model"] = model
+    req = urllib.request.Request(
+        url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=300) as r:
+            import json as _j
+            return bool(_j.loads(r.read())["choices"][0]["message"]["content"].strip())
+    except Exception:
+        return False
+
+
 def t_vision(sandbox):
     """A vision model whose projector sits in its own directory: exercises
-    --mmproj and the MMPROJ_DIR grant."""
+    --mmproj and the MMPROJ_DIR grant, and decodes a real image."""
     return server_test(
         sandbox,
         ["llama-server", "--model", VISION, "--mmproj", mmproj_elsewhere(), "-lv", "6"],
         "http://127.0.0.1:%d/health" % PORT,
         "http://127.0.0.1:%d/v1/chat/completions" % PORT,
         needs_gpu=True,
+        image=True,
     )
 
 
