@@ -18,10 +18,16 @@
   (literal "/private/etc/hosts"))
 
 ;; ── TTY (interactive prompts / TUI rawmode) ──────────────
+;; Only this process's controlling terminal, resolved by sandbox.sh (its
+;; /dev/null fallback covers a non-interactive run). A pattern over
+;; /dev/ttys* would hand over every other terminal on the machine — the
+;; sessions you have open elsewhere — to read input from and write escape
+;; sequences into. Path grants are enforced for ioctls on inherited
+;; descriptors too, not just open(), so the real path has to be named:
+;; the /dev/tty alias alone is not enough.
 (allow file-read* file-write* file-ioctl
-  (subpath "/dev/tty")
-  (subpath "/dev/pty")
-  (regex #"^/dev/ttys[0-9]+$"))
+  (literal "/dev/tty")
+  (literal (param "TTY_DEV")))
 
 ;; ── Network: the local model server only ─────────────────
 (allow network-outbound

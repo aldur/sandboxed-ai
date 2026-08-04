@@ -109,6 +109,7 @@ pi_sh() {
     -D PI_DIR="$STATE_DIR/pi" \
     -D PI_LLAMA_DIR="$STATE_DIR/pi" \
     -D TMPDIR="$STATE_DIR/tmp" \
+    -D TTY_DEV="${PROBE_TTY:-/dev/null}" \
     -D NET_ADDR="localhost:$PORT" \
     -f "$ROOT/profiles/pi.sb" /bin/sh -c "$1" 2>/dev/null
 }
@@ -196,6 +197,29 @@ if pi_sh "exec 3<>/dev/tcp/127.0.0.1/$PORT"; then
   ok "probe: outbound to the llama-server port is allowed"
 else
   fail "probe: outbound to the llama-server port is allowed"
+fi
+
+# The TTY grant names one controlling terminal, so every *other* terminal
+# on the machine must be out of reach: otherwise a compromised client could
+# read input from — and write escape sequences into — the sessions you have
+# open elsewhere. Probes a terminal that is not the one granted above.
+OTHER_TTY=""
+for t in /dev/ttys00[0-9]; do
+  [[ -e "$t" && "$t" != "${PROBE_TTY:-}" ]] && { OTHER_TTY="$t"; break; }
+done
+if [[ -n "$OTHER_TTY" ]]; then
+  if pi_sh ": < '$OTHER_TTY'"; then
+    fail "probe: other terminals are denied ($OTHER_TTY readable)"
+  else
+    ok "probe: other terminals are denied"
+  fi
+  if pi_sh ": > '$OTHER_TTY'"; then
+    fail "probe: other terminals are not writable ($OTHER_TTY writable)"
+  else
+    ok "probe: other terminals are not writable"
+  fi
+else
+  skip "probe: other terminals are denied" "no /dev/ttys00* present"
 fi
 
 stop_server

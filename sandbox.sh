@@ -175,6 +175,18 @@ resolve_darwin_dirs() {
     die "cannot resolve DARWIN_USER_CACHE_DIR"
 }
 
+# The controlling terminal the client profiles grant read/write/ioctl on.
+# Only this one: the /dev/ttys* nodes are all mode 0620 and owned by the
+# invoking user, so a pattern grant would let a compromised client read
+# input from — and write escape sequences into — every other terminal
+# session open on the machine. Sets TTY_DEV; /dev/null means "not a
+# terminal" (the profile references the param unconditionally and
+# sandbox-exec errors on a never-passed one), which also covers a
+# non-interactive run where there is no ctty to grant.
+resolve_tty() {
+  TTY_DEV="$(tty 2>/dev/null)" && [[ "$TTY_DEV" == /dev/* ]] || TTY_DEV="/dev/null"
+}
+
 # The CA bundle the mlx profile grants read on: huggingface_hub builds an
 # SSL context even in offline mode, and nixpkgs' certifi opens
 # NIX_SSL_CERT_FILE verbatim (/no-cert-file.crt is its "unset" marker). On
@@ -795,6 +807,7 @@ cmd_pi() {
   pi_bin="$(resolve_binary "${PI:-}" pi PI)"
   pkg_store="$(pkg_store_for "$pi_bin")"
   resolve_darwin_dirs
+  resolve_tty
 
   printf 'Starting sandboxed pi:\n'
   info "binary:" "$pi_bin"
@@ -817,6 +830,7 @@ cmd_pi() {
     -D WORKSPACE="$WORKSPACE" \
     -D PI_DIR="$pi_home" \
     -D PI_LLAMA_DIR="$PI_LLAMA_DIR" \
+    -D TTY_DEV="$TTY_DEV" \
     -D TMPDIR="$TMPDIR" \
     -D NET_ADDR="localhost:$PORT" \
     -f "$PROFILES_DIR/pi.sb" \
@@ -841,6 +855,7 @@ cmd_llm() {
   llm_bin="$(resolve_binary "${LLM:-}" llm LLM)"
   pkg_store="$(pkg_store_for "$llm_bin")"
   resolve_darwin_dirs
+  resolve_tty
 
   cd "$LLM_USER_PATH"
 
@@ -852,6 +867,7 @@ cmd_llm() {
     -D DARWIN_USER_CACHE_DIR="$DARWIN_USER_CACHE_DIR" \
     -D LLM_USER_PATH="$LLM_USER_PATH" \
     -D TMPDIR="$TMPDIR" \
+    -D TTY_DEV="$TTY_DEV" \
     -D NET_ADDR="localhost:$PORT" \
     -f "$PROFILES_DIR/llm.sb" \
     "$llm_bin" "$@"
