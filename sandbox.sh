@@ -269,10 +269,12 @@ select_net() {
 }
 
 # ── Hugging Face downloads ────────────────────────────────
-# Lifecycle: partial downloads are kept on purpose (curl -C - resumes them);
-# neither helper detects a truncated file that stopped growing. Network
-# failure and "no such repo" both yield an empty listing — callers treat the
-# two alike and fall back to local files.
+# Everything fetched here is later parsed by a server inside the sandbox —
+# weights by llama.cpp/MLX, and config.json even decides which server binary
+# runs (see cmd_mlx) — so downloads are checksum-verified against what the
+# repo publishes, not merely TLS-transported. Network failure and "no such
+# repo" both yield an empty listing; callers treat the two alike and fall
+# back to local files.
 
 # rfilenames of an HF repo, one per line; $2 optionally narrows to a
 # (grep-escaped) filename-suffix pattern. Empty output when offline or the
@@ -283,58 +285,131 @@ hf_listing() {
     sed 's/"rfilename":"//;s/"//'
 }
 
-# Download one GGUF file from HF into target (resumable), verifying its
-# magic bytes. Reuses a valid cached copy. All output goes to stderr.
+# Digest of $1, in the "$2" scheme, or empty when it cannot be computed.
+#   sha256  — plain content hash, what HF publishes for LFS objects
+#   gitsha1 — git blob id: sha1 over "blob <bytes>\0" then the content,
+#             which is the oid HF reports for non-LFS (small) files
+file_digest() {
+  local file="$1"
+  case "$2" in
+  sha256) shasum -a 256 "$file" 2>/dev/null | cut -d' ' -f1 ;;
+  gitsha1)
+    {
+      printf 'blob %d\0' "$(wc -c <"$file")"
+      cat "$file"
+    } | shasum -a 1 2>/dev/null | cut -d' ' -f1
+    ;;
+  esac
+}
+
+# True when $1's content matches the expected digest $2 ("scheme:hex").
+file_matches() {
+  [[ -f "$1" && -n "$2" ]] || return 1
+  [[ "$(file_digest "$1" "${2%%:*}")" == "${2#*:}" ]]
+}
+
+# Where a verified download records the digest it was checked against, so a
+# cache hit costs a string compare instead of re-hashing gigabytes. Hidden,
+# which also keeps it out of seed_hf_cache's snapshot.
+digest_sidecar() { printf '%s/.%s.digest' "${1%/*}" "${1##*/}"; }
+
+# Populate HF_DIGEST for repo $1: file path → "scheme:hex". Hugging Face
+# publishes a SHA-256 for LFS objects (the weights) and a git blob SHA-1
+# for everything else, both in the same tree listing. Stays empty when
+# offline — callers then fall back to their weaker local checks.
+declare -A HF_DIGEST=()
+hf_load_digests() {
+  HF_DIGEST=()
+  local json entry path
+  json="$(curl -sf "https://huggingface.co/api/models/$1/tree/main?recursive=1")" ||
+    return 0
+  # One JSON array on one line: split it into an entry per line first.
+  while IFS= read -r entry; do
+    [[ "$entry" =~ \"path\":\"([^\"]+)\" ]] || continue
+    path="${BASH_REMATCH[1]}"
+    if [[ "$entry" =~ \"lfs\":\{\"oid\":\"([0-9a-f]{64})\" ]]; then
+      HF_DIGEST["$path"]="sha256:${BASH_REMATCH[1]}"
+    elif [[ "$entry" =~ \"oid\":\"([0-9a-f]{40})\" ]]; then
+      HF_DIGEST["$path"]="gitsha1:${BASH_REMATCH[1]}"
+    fi
+  done < <(sed 's/},{"type"/}\n{"type"/g' <<<"$json")
+}
+
+# Download $2 from repo $1 into $3 (resumable), verifying it against the
+# digest hf_load_digests published for it. A mismatch is retried once from
+# scratch: `curl -C -` resumes by appending, so a file truncated mid-write
+# by an earlier run splices old and new bytes into something no length or
+# magic-byte check would catch. $4 is an optional fallback validator to run
+# when no digest is known (offline) — currently only 'gguf'. All output
+# goes to stderr.
 hf_download() {
-  local repo="$1" file="$2" target="$3"
-  local magic
+  local repo="$1" file="$2" target="$3" fallback="${4:-}"
+  local want="${HF_DIGEST[$file]:-}"
+  local sidecar
+  sidecar="$(digest_sidecar "$target")"
 
   if [[ -f "$target" ]]; then
-    magic="$(head -c 4 "$target")" || true # unreadable file == no magic
-    if [[ "$magic" == "GGUF" ]]; then
+    if [[ -n "$want" ]]; then
+      # A sidecar naming the expected digest means this exact content was
+      # verified when it landed; otherwise hash it now (once) and record it.
+      if [[ "$(cat "$sidecar" 2>/dev/null)" == "$want" ]] || file_matches "$target" "$want"; then
+        printf '%s' "$want" >"$sidecar"
+        info "cached:" "$file" >&2
+        return
+      fi
+      rm -f "$target" "$sidecar"
+      info "removed:" "checksum mismatch, re-downloading $file" >&2
+    elif hf_fallback_ok "$target" "$fallback"; then
       info "cached:" "$file" >&2
       return
+    else
+      rm -f "$target" "$sidecar"
+      info "removed:" "invalid cached file, re-downloading $file" >&2
     fi
-    rm -f "$target"
-    info "removed:" "invalid cached file, re-downloading" >&2
   fi
 
   local url="https://huggingface.co/$repo/resolve/main/$file"
-  local http_code
-  # HEAD probe for a clear error before the download starts.
-  http_code="$(curl -sI -o /dev/null -w '%{http_code}' "$url")" || http_code="000"
-  [[ "$http_code" == 200 || "$http_code" == 302 ]] ||
-    die "file not found on HF (HTTP $http_code): $repo/$file"
-
-  info "download:" "$file" >&2
+  local attempt http_code
   mkdir -p "${target%/*}"
-  curl -L -C - --progress-bar -o "$target" "$url" ||
-    die "failed to download $repo/$file"
+  for attempt in 1 2; do
+    ((attempt == 1)) || {
+      rm -f "$target"
+      info "retry:" "$file (fresh download)" >&2
+    }
+    info "download:" "$file" >&2
+    curl -fL -C - --progress-bar -o "$target" "$url" || {
+      # Only now pay for a HEAD probe, to say *why* it failed.
+      http_code="$(curl -sI -o /dev/null -w '%{http_code}' "$url")" || http_code="000"
+      [[ "$http_code" == 200 || "$http_code" == 302 ]] ||
+        die "file not found on HF (HTTP $http_code): $repo/$file"
+      die "failed to download $repo/$file"
+    }
 
-  magic="$(head -c 4 "$target")" || true
-  [[ "$magic" == "GGUF" ]] || {
-    rm -f "$target"
-    die "downloaded file is not a valid GGUF: $repo/$file"
-  }
+    if [[ -z "$want" ]]; then
+      hf_fallback_ok "$target" "$fallback" || {
+        rm -f "$target"
+        die "downloaded file failed its $fallback check: $repo/$file"
+      }
+      return
+    fi
+    if file_matches "$target" "$want"; then
+      printf '%s' "$want" >"$sidecar"
+      return
+    fi
+  done
+
+  rm -f "$target" "$sidecar"
+  die "checksum mismatch for $repo/$file (expected $want)"
 }
 
-# Download one file from an HF repo into target (resumable). Reuses an
-# existing non-empty copy. Unlike hf_download there is no content
-# validation — MLX repos hold many file types (safetensors, json, tokenizer
-# data).
-hf_download_raw() {
-  local repo="$1" file="$2" target="$3"
-
-  if [[ -s "$target" ]]; then
-    info "cached:" "$file" >&2
-    return
-  fi
-
-  info "download:" "$file" >&2
-  mkdir -p "${target%/*}"
-  curl -sfL -C - --progress-bar -o "$target" \
-    "https://huggingface.co/$repo/resolve/main/$file" ||
-    die "failed to download $repo/$file"
+# Content check used only when HF published no digest (offline resolution
+# against already-downloaded files). $2 selects it; empty means "non-empty
+# file is good enough", which is all an arbitrary MLX repo file allows.
+hf_fallback_ok() {
+  case "$2" in
+  gguf) [[ "$(head -c 4 "$1" 2>/dev/null)" == "GGUF" ]] ;;
+  *) [[ -s "$1" ]] ;;
+  esac
 }
 
 # ── Model resolution: GGUF (llama-server) ─────────────────
@@ -502,10 +577,12 @@ resolve_model() {
   split_lines "$files_out" want
   [[ ${#want[@]} -gt 1 ]] && info "split:" "${#want[@]} shards" >&2
 
+  hf_load_digests "$repo"
+
   local f target first=""
   for f in "${want[@]}"; do
     target="$MODELS_DIR/$repo/$f"
-    hf_download "$repo" "$f" "$target"
+    hf_download "$repo" "$f" "$target" gguf
     [[ -z "$first" ]] && first="$target"
   done
 
@@ -538,10 +615,12 @@ resolve_mlx_model() {
 
   local target_dir="$MODELS_DIR/$spec"
 
-  # A finished earlier download is a complete snapshot of the repo (the
-  # marker is written only once every file has landed), so resolve it
-  # locally — no HF round-trip, works offline. Delete the marker (or the
-  # directory) to re-sync with upstream.
+  # A finished earlier download is a complete snapshot of the repo whose
+  # files were checksum-verified as they landed (the marker is written only
+  # once every one of them has), so resolve it locally — no HF round-trip,
+  # works offline. Delete the marker (or the directory) to re-sync with
+  # upstream. Anything that can rewrite a cached weight can also rewrite
+  # this marker, so it records "verified on arrival", not "verified now".
   if [[ -f "$target_dir/.download-complete" ]]; then
     info "cached:" "$spec" >&2
     printf '%s' "$target_dir"
@@ -565,6 +644,7 @@ resolve_mlx_model() {
   fi
 
   info "resolving:" "$spec" >&2
+  hf_load_digests "$spec"
 
   local f
   while IFS= read -r f; do
@@ -573,7 +653,7 @@ resolve_mlx_model() {
     case "$f" in
     .* | */.* | README.md | *.md) continue ;;
     esac
-    hf_download_raw "$spec" "$f" "$target_dir/$f"
+    hf_download "$spec" "$f" "$target_dir/$f"
   done <<<"$listing"
 
   [[ -f "$target_dir/config.json" ]] ||

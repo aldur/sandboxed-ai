@@ -308,6 +308,28 @@ else
   skip "mlx-server (unix socket)" "mlx-lm build lacks the unix-socket patch — reload the devshell"
 fi
 
+# ── Download integrity ────────────────────────────────────
+# Downloads are verified against the digests HF publishes (SHA-256 for LFS
+# weights, git blob SHA-1 for the small files). Tamper with a cached file
+# — config.json, whose contents decide which server binary gets exec'd —
+# and re-resolving must notice and replace it. Cheap: 803 bytes.
+MLX_CFG="$STATE_DIR/models/$TEST_MLX_MODEL/config.json"
+if [[ -f "$MLX_CFG" ]] && command -v mlx_lm.server >/dev/null; then
+  cfg_before="$(shasum -a 256 "$MLX_CFG" | cut -d' ' -f1)"
+  printf '{"tampered":true}' >"$MLX_CFG"
+  # Drop the completion marker and the sidecar, i.e. force a real re-check.
+  rm -f "${MLX_CFG%/*}/.download-complete" "${MLX_CFG%/*}/.config.json.digest"
+  "$SANDBOX" mlx-server --model "$TEST_MLX_MODEL" --help >"$WORK/integrity.log" 2>&1 || true
+  cfg_after="$(shasum -a 256 "$MLX_CFG" | cut -d' ' -f1)"
+  if [[ "$cfg_before" == "$cfg_after" ]]; then
+    ok "integrity: a tampered cached file is detected and replaced"
+  else
+    fail "integrity: a tampered cached file is detected and replaced" "$WORK/integrity.log"
+  fi
+else
+  skip "integrity: a tampered cached file is detected and replaced" "no cached MLX config.json"
+fi
+
 # ── mlx exec grant names the entry point's chain only ─────
 # The profile used to allow exec across the whole package store. It now
 # names the entry point, its shebang interpreter and any wrapper
