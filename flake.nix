@@ -199,15 +199,31 @@
         default = sandboxed-ai;
       };
 
-      devShells.${system}.default = pkgs.mkShell {
-        packages = [
-          llama-cpp
-          llm
-          mlx-lm
-          mlx-vlm
-          pkgs.pi-coding-agent
-          sandboxed-ai
-        ];
+      devShells.${system} = {
+        default = pkgs.mkShell {
+          packages = [
+            sandboxed-ai
+            pkgs.python3
+          ];
+
+          LLAMA_SERVER = "${llama-cpp}/bin/llama-server";
+          MLX_SERVER = "${mlx-lm}/bin/mlx_lm.server";
+          MLX_VLM_SERVER = "${mlx-vlm}/bin/mlx_vlm.server";
+          LLM = "${llm}/bin/llm";
+          PI = "${pkgs.pi-coding-agent}/bin/pi";
+          PI_LLAMA_DIR = "${pi-llama}";
+        };
+
+        # The tools themselves, unsandboxed, for when needed.
+        tools = pkgs.mkShell {
+          packages = [
+            llama-cpp
+            llm
+            mlx-lm
+            mlx-vlm
+            pkgs.pi-coding-agent
+          ];
+        };
       };
     };
 }
