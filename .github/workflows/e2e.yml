@@ -37,4 +37,8 @@ jobs:
       # Builds the devshell first: llama-cpp is version-bumped past the
       # nixpkgs binary cache, so the first uncached run compiles it.
       - name: Run e2e tests
+        # The runner is ephemeral, so clearing the Metal shader cache costs
+        # nothing here and covers the cold-start path a warm cache hides.
+        env:
+          SANDBOXED_AI_TEST_COLD_METAL: "1"
         run: nix develop --command tests/e2e.sh
