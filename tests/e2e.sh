@@ -417,6 +417,35 @@ else
   fail "workspace: a symlinked workspace is canonicalized" "$WORK/ws-link.log"
 fi
 
+# Model specs become local paths under the models dir, so a spec that walks
+# out of it must be refused before anything is created — the HF URL
+# normalizes ".." away at the host root, so the fetch itself would succeed.
+spec_reject() { # $1 subcommand, $2 spec
+  if "$SANDBOX" "$1" --model "$2" >"$WORK/spec.log" 2>&1; then
+    fail "spec: '$2' is refused" "$WORK/spec.log"
+  elif grep -q 'not a Hugging Face repo id\|invalid file selection' "$WORK/spec.log"; then
+    ok "spec: '$2' is refused"
+  else
+    fail "spec: '$2' is refused (wrong error)" "$WORK/spec.log"
+  fi
+}
+spec_reject llama-server '../../org/repo:file.gguf'
+spec_reject llama-server 'org/repo:../../evil.gguf'
+spec_reject mlx-server '../../org/repo'
+
+# --socket runs unsandboxed with full privileges on a caller-typed path, so
+# it must never unlink anything but a stale socket of ours.
+printf 'important\n' >"$SCRATCH/notasocket.sock"
+if "$SANDBOX" llama-server --model "$TEST_GGUF_MODEL" --socket "$SCRATCH/notasocket.sock" \
+  >"$WORK/sock-file.log" 2>&1; then
+  fail "socket: an existing non-socket file is refused" "$WORK/sock-file.log"
+elif grep -q 'exists and is not a socket' "$WORK/sock-file.log" &&
+  [[ "$(cat "$SCRATCH/notasocket.sock")" == important ]]; then
+  ok "socket: an existing non-socket file is refused (and left intact)"
+else
+  fail "socket: an existing non-socket file is refused" "$WORK/sock-file.log"
+fi
+
 # A repo with no GGUF listing must reach its error message, not exit blank.
 "$SANDBOX" llama-server --model no-such-org/no-such-repo-xyz:Q4_K_M >"$WORK/no-listing.log" 2>&1
 if grep -q 'cannot resolve quant' "$WORK/no-listing.log"; then

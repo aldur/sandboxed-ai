@@ -286,6 +286,13 @@ resolve_ca_file() {
 # with the socket path as the filter — each personality grants nothing of
 # the other's surface. The path must end in .sock (all three servers key
 # UNIX-socket mode off that suffix on --host) and is normalized here.
+# True when some process holds $1 open, i.e. it is a live socket rather
+# than a leftover. Conservative: with no lsof, nothing is reported in use.
+socket_in_use() {
+  command -v lsof >/dev/null || return 1
+  [[ -n "$(lsof -t -- "$1" 2>/dev/null)" ]]
+}
+
 select_net() {
   NET_SB="$PROFILES_DIR/net-tcp.sb"
   NET_TARGET="*:$PORT"
@@ -300,8 +307,23 @@ select_net() {
   # group- or world-writable is an open door to the model. Without the
   # umask the mode is whatever the caller's happens to be — 0755 under the
   # usual 022, but 0775 under 002.
-  mkdir -m 700 -p "${sock%/*}" # the profile grants only the socket path itself
-  rm -f "$sock"                # a stale socket file would make bind() fail
+  # ${sock%/*} is empty for a path directly under / ("/x.sock").
+  local dir="${sock%/*}"
+  [[ -n "$dir" ]] || dir=/
+  mkdir -m 700 -p "$dir" # the profile grants only the socket path itself
+
+  # A stale socket file would make bind() fail, so it has to go — but this
+  # runs unsandboxed with full user privileges on a path the caller typed,
+  # so only ever unlink a socket, and never one something is listening on:
+  # a fat-fingered --socket /opt/homebrew/var/run/mysqld/mysqld.sock must
+  # not take out a live database.
+  if [[ -e "$sock" || -L "$sock" ]]; then
+    [[ -S "$sock" ]] ||
+      die "--socket path exists and is not a socket: $sock"
+    ! socket_in_use "$sock" ||
+      die "--socket path is already served by another process: $sock"
+    rm -f "$sock"
+  fi
   umask 077
   NET_SB="$PROFILES_DIR/net-unix.sb"
   NET_TARGET="$sock"
@@ -322,6 +344,26 @@ hf_listing() {
   curl -sf "https://huggingface.co/api/models/$1" |
     grep -o "\"rfilename\":\"[^\"]*${2:-}\"" |
     sed 's/"rfilename":"//;s/"//'
+}
+
+# A Hugging Face repo id, and nothing that could walk out of MODELS_DIR:
+# every spec becomes part of a local path ("$MODELS_DIR/$repo/$file"), and
+# the HF URL normalizes ".." away at the host root, so a spec like
+# ../../org/repo would still fetch while writing outside the models dir.
+valid_hf_repo() { [[ "$1" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; }
+
+# A relative path safe to append to a directory: non-empty, not absolute,
+# and free of ".." or empty components. Applied to filenames from the
+# caller *and* from HF's listing — the listing is remote input too.
+safe_rel_path() {
+  [[ -n "$1" && "$1" != /* ]] || return 1
+  local -a parts
+  local part
+  IFS='/' read -ra parts <<<"$1"
+  for part in "${parts[@]}"; do
+    [[ -n "$part" && "$part" != ".." ]] || return 1
+  done
+  return 0
 }
 
 # Digest of $1, in the "$2" scheme, or empty when it cannot be computed.
@@ -583,6 +625,10 @@ resolve_model() {
     repo="${spec%%:*}"
     sel="${spec#*:}"
   fi
+  valid_hf_repo "$repo" ||
+    die "not a Hugging Face repo id: $repo (expected org/name)"
+  [[ -z "$sel" ]] || safe_rel_path "$sel" ||
+    die "invalid file selection: $sel"
 
   # GGUF files available in the repo (may include subfolders).
   local listing
@@ -621,6 +667,7 @@ resolve_model() {
 
   local f target first=""
   for f in "${want[@]}"; do
+    safe_rel_path "$f" || die "unsafe filename in $repo: $f"
     target="$MODELS_DIR/$repo/$f"
     hf_download "$repo" "$f" "$target" gguf
     [[ -z "$first" ]] && first="$target"
@@ -652,6 +699,8 @@ resolve_mlx_model() {
   # Must look like an HF ref: org/repo, not an absolute path.
   [[ "$spec" == */* && "$spec" != /* ]] ||
     die "model not found: $spec (use a local directory or org/repo)"
+  valid_hf_repo "$spec" ||
+    die "not a Hugging Face repo id: $spec (expected org/name)"
 
   local target_dir="$MODELS_DIR/$spec"
 
@@ -693,6 +742,7 @@ resolve_mlx_model() {
     case "$f" in
     .* | */.* | README.md | *.md) continue ;;
     esac
+    safe_rel_path "$f" || die "unsafe filename in $spec: $f"
     hf_download "$spec" "$f" "$target_dir/$f"
   done <<<"$listing"
 
@@ -851,6 +901,8 @@ cmd_llama() {
     esac
   done
   [[ -n "${MODEL:-}" ]] || die "no model specified — use --model or set MODEL env var"
+  # Before the download: a bad --socket should not cost a 17 GB fetch first.
+  select_net "$socket"
 
   local model_path model_dir model_alias llama_server pkg_store
   model_path="$(resolve_model "$MODEL")"
@@ -881,7 +933,6 @@ cmd_llama() {
 
   local -a server_args=(--model "$model_path" --alias "$model_alias" --port "$PORT")
   [[ -n "$mmproj_path" ]] && server_args+=(--mmproj "$mmproj_path")
-  select_net "$socket"
   [[ -n "$socket" ]] && server_args+=(--host "$NET_TARGET")
 
   printf 'Starting sandboxed llama-server:\n'
@@ -941,6 +992,8 @@ cmd_mlx() {
     esac
   done
   [[ -n "${MODEL:-}" ]] || die "no model specified — use --model or set MODEL env var"
+  # Before the download: a bad --socket should not cost a full repo fetch.
+  select_net "$socket"
 
   local model_dir
   model_dir="$(resolve_mlx_model "$MODEL")"
@@ -1012,7 +1065,6 @@ cmd_mlx() {
   # llama-server's convention of a UNIX socket when --host ends in .sock.
   # Extra args come last so they can override.
   local -a server_args=(--model "$serve_ref" --port "$PORT")
-  select_net "$socket"
   if [[ -n "$socket" ]]; then
     server_args+=(--host "$NET_TARGET")
   else
