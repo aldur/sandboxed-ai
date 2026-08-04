@@ -18,14 +18,17 @@
   (global-name "com.apple.metal.shared")
   (global-name "com.apple.GPUCompiler.daemon"))
 
-;; ── IOKit: GPU + ANE ─────────────────────────────────────
+;; ── IOKit: GPU ───────────────────────────────────────────
+;; Metal only. The Neural Engine user clients (H11ANEUserClient,
+;; AppleH11ANEUserClientV2, ANEUserClient) are not here on purpose: neither
+;; llama.cpp nor MLX reaches the ANE — that runs through CoreML — so they
+;; were pure kernel surface handed to the process that parses model files.
+;; What remains cannot be reduced further: these are what talking to the
+;; GPU requires (see the README on what this sandbox does not contain).
 (allow iokit-open
   (iokit-user-client-class "AGXDeviceUserClient")
   (iokit-user-client-class "AGXCommandQueueUserClient")
   (iokit-user-client-class "AGXSharedUserClient")
-  (iokit-user-client-class "H11ANEUserClient")
-  (iokit-user-client-class "AppleH11ANEUserClientV2")
-  (iokit-user-client-class "ANEUserClient")
   (iokit-user-client-class "IOAcceleratorClient")
   (iokit-user-client-class "IOGPUDeviceUserClient")
   (iokit-user-client-class "IOSurfaceRootUserClient"))
@@ -81,8 +84,7 @@
        ipc-posix-shm-write-data
        ipc-posix-shm-write-create
   (ipc-posix-name-prefix "com.apple.metal")
-  (ipc-posix-name-prefix "com.apple.GPUCompiler")
-  (ipc-posix-name-prefix "com.apple.ane"))
+  (ipc-posix-name-prefix "com.apple.GPUCompiler"))
 
 ;; ── Network ──────────────────────────────────────────────
 ;; Serving personality chosen by sandbox.sh — see net-tcp.sb / net-unix.sb.

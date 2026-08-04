@@ -228,6 +228,30 @@ else
   fail "probe: outbound to the llama-server port is allowed"
 fi
 
+# Raw mode is tcsetattr on the granted terminal, not a window-system
+# capability: with com.apple.windowserver.active the agent could enumerate
+# every on-screen window (owner names and geometry).
+if [[ -n "$PY" ]]; then
+  cat >"$SCRATCH/ws/win.py" <<'PYEOF'
+import ctypes
+cg = ctypes.CDLL("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+cf = ctypes.CDLL("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation")
+cg.CGWindowListCopyWindowInfo.restype = ctypes.c_void_p
+cg.CGWindowListCopyWindowInfo.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
+cf.CFArrayGetCount.restype = ctypes.c_long
+cf.CFArrayGetCount.argtypes = [ctypes.c_void_p]
+r = cg.CGWindowListCopyWindowInfo(1 | 16, 0)
+raise SystemExit(1 if r and cf.CFArrayGetCount(r) > 0 else 0)
+PYEOF
+  if pi_sh "'$PY' -I '$SCRATCH/ws/win.py'"; then
+    ok "probe: the agent cannot enumerate on-screen windows"
+  else
+    fail "probe: the agent cannot enumerate on-screen windows"
+  fi
+else
+  skip "probe: the agent cannot enumerate on-screen windows" "no python3 in $PKG_STORE"
+fi
+
 # The agent must not share writable state with the sandboxes that hold the
 # GPU and the weights. Two channels used to exist: Apple's per-user Metal
 # shader/PSO cache (which a server maps executable on its next start) and a

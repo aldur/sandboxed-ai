@@ -35,17 +35,15 @@
   (subpath "/Applications/Xcode.app/Contents/Developer"))
 
 ;; ── Mach (IPC) ───────────────────────────────────────────
+;; No WindowServer and no HID here: raw mode is tcsetattr on the terminal
+;; granted in client.sb, not a window-system or input-device capability.
+;; With com.apple.windowserver.active the agent could enumerate every
+;; on-screen window — owner names and geometry — via
+;; CGWindowListCopyWindowInfo; llm.sb, which never had the grant, returns
+;; NULL for the same call.
 (allow mach-lookup
   (global-name "com.apple.CoreServices.coreservicesd")
-  (global-name "com.apple.SystemConfiguration.configd")
-  ;; Terminal / TUI rawmode
-  (global-name "com.apple.iohideventsystem")
-  (global-name "com.apple.windowserver.active"))
-
-;; ── IOKit (terminal keyboard input) ──────────────────────
-(allow iokit-open
-  (iokit-user-client-class "IOHIDLibUserClient")
-  (iokit-user-client-class "IOHIDEventSystemUserClient"))
+  (global-name "com.apple.SystemConfiguration.configd"))
 
 ;; ── Sysctl ───────────────────────────────────────────────
 (allow sysctl-read sysctl-write
@@ -55,10 +53,10 @@
 (allow file-read* file-write*
   (subpath (param "WORKSPACE")))
 
-;; ── Shared memory + semaphores ───────────────────────────
-(allow ipc-posix-shm-read-data ipc-posix-shm-write-data ipc-posix-shm-write-create
-  (ipc-posix-name-prefix "com.apple."))
-
+;; ── Semaphores ───────────────────────────────────────────
+;; Node's libuv opens unnamed semaphores; no POSIX shared memory is needed
+;; (the "com.apple." shm prefix this used to carry is a superset of the
+;; segments the GPU servers use, which a client has no business touching).
 (allow ipc-posix-sem-open
        ipc-posix-sem-post
        ipc-posix-sem-wait)
