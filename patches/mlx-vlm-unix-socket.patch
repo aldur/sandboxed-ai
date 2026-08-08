@@ -1,0 +1,43 @@
+--- a/mlx_vlm/server.py
++++ b/mlx_vlm/server.py
+@@ -1455,10 +1455,40 @@
+     os.environ["MAX_KV_SIZE"] = str(args.max_kv_size)
+     os.environ["QUANTIZED_KV_START"] = str(args.quantized_kv_start)
+ 
++    # Serve on a UNIX domain socket when --host ends in .sock, mirroring
++    # llama-server's convention.
++    #
++    # The socket is bound here rather than handed to uvicorn as `uds=`:
++    # uvicorn chmods that path to 0666 unconditionally (its "keep the
++    # existing mode" branch only fires for a pre-existing file, and the
++    # caller unlinks a stale one), and on macOS connecting to a UNIX socket
++    # requires write permission on it — so 0666 would let any local user
++    # reach an unauthenticated model server. Binding under a 0177 umask,
++    # plus an explicit chmod in case the umask is looser, keeps it
++    # owner-only. uvicorn's fd= branch takes precedence over uds= and
++    # host/port, and `_uds` stays referenced so the fd outlives this scope.
++    listen_fd = None
++    if args.host.endswith(".sock"):
++        import socket as _socket
++
++        try:
++            os.unlink(args.host)
++        except FileNotFoundError:
++            pass
++        _uds = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
++        _prev_umask = os.umask(0o177)
++        try:
++            _uds.bind(args.host)
++        finally:
++            os.umask(_prev_umask)
++        os.chmod(args.host, 0o600)
++        listen_fd = _uds.fileno()
++
+     uvicorn.run(
+         "mlx_vlm.server:app",
+         host=args.host,
+         port=args.port,
++        fd=listen_fd,
+         workers=1,
+         reload=args.reload,
+     )

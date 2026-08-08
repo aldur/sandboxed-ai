@@ -1,0 +1,29 @@
+; vim:ft=scheme
+(version 1)
+(deny default)
+
+;; pi (pi-coding-agent) sandbox — shells, TTY and server-dialing come from
+;; client.sb; this file adds pi's own state and its workspace.
+;;
+;; A TUI needs no window-system or input-device access: raw mode is
+;; tcsetattr on the terminal client.sb grants. Anything that would let the
+;; agent see the rest of the desktop — the WindowServer lookup above all —
+;; stays out.
+(import (param "COMMON_SB"))
+(import (param "CLIENT_SB"))
+
+;; ── pi state (~/.pi etc.; HOME points here) + scratch ────
+;; Both live under the per-user state root, outside the workspace.
+(allow file-read* file-write*
+  (subpath (param "PI_DIR"))
+  (subpath (param "TMPDIR")))
+
+;; ── llama-cpp provider extension (read-only, from store) ─
+;; Covered by common.sb's PKG_STORE rule, but the explicit path makes the
+;; dependency obvious and survives a narrower PKG_STORE.
+(allow file-read*
+  (subpath (param "PI_LLAMA_DIR")))
+
+;; ── Workspace: full read + write ─────────────────────────
+(allow file-read* file-write*
+  (subpath (param "WORKSPACE")))

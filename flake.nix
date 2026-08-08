@@ -1,10 +1,29 @@
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+
+    dotfiles = {
+      url = "github:aldur/dotfiles";
+      inputs = {
+        # We rely on `nixpkgs-darwin` to fetch the mlx wheel and its hash.
+        # We do not override it on purpose.
+        nixpkgs.follows = "nixpkgs";
+        nixpkgs-unstable.follows = "nixpkgs";
+        agenix.follows = "";
+        clipshare.follows = "";
+        dashp.follows = "";
+        detnix.follows = "";
+        home-manager.follows = "";
+        neovim-nightly-overlay.follows = "";
+        nix-index-database.follows = "";
+        nixCats.follows = "";
+        preservation.follows = "";
+      };
+    };
   };
 
   outputs =
-    { nixpkgs, ... }:
+    { nixpkgs, dotfiles, ... }:
     let
       system = "aarch64-darwin";
       pkgs = nixpkgs.legacyPackages.${system};
@@ -46,56 +65,77 @@
 
       llm = pkgs.llm.withPlugins { llm-llama-server = true; };
 
-      # Hugging Face's llama.cpp provider for pi: a single index.ts extension
-      # with no npm dependencies (only an optional peer-dep on pi itself), so
-      # the source tree is all we need. It is loaded with `pi -e <dir>/index.ts`
-      # rather than the runtime `pi install` (which git-clones over the network
-      # into a mutable ~/.pi and edits pi settings) — keeping it pinned and
-      # offline, in the same spirit as llm.withPlugins and the bundled profiles.
-      # Wrapped in a derivation (rather than exposing fetchFromGitHub directly)
-      # so it carries a `version` that nix-update can bump in CI.
-      pi-llama = pkgs.stdenvNoCC.mkDerivation {
-        pname = "pi-llama";
-        version = "0-unstable-2026-07-06";
-
-        src = pkgs.fetchFromGitHub {
-          owner = "huggingface";
-          repo = "pi-llama";
-          rev = "8a876fca45c7824a50cd74f01ea11e0bab7964a2";
-          hash = "sha256-5cTimbW+wLYiAUsqoNUi9AbArrWUR2Mzd+22zkwrTlg=";
-        };
-
-        installPhase = ''
-          runHook preInstall
-          cp -r . $out
-          runHook postInstall
-        '';
+      # MLX equivalent of llama-server: `mlx_lm.server` (ml-explore/mlx-lm)
+      # speaks the same OpenAI-compatible HTTP API (/v1/chat/completions,
+      # /v1/models, /health) on localhost.
+      #
+      # nixpkgs builds the `mlx` python package with MLX_BUILD_METAL=OFF (the
+      # `metal` shader compiler is proprietary and unavailable in the build
+      # sandbox), so it does no GPU acceleration. Metal support comes from the
+      # dotfiles `mlx` overlay (prebuilt Apple-Silicon PyPI wheel), applied to
+      # a nixpkgs instance of its own so the main `pkgs` — and its binary
+      # cache hits — stay untouched by the python package-set extensions.
+      pkgsMlx = import nixpkgs {
+        inherit system;
+        overlays = [
+          dotfiles.overlays.mlx
+          # Serve on a UNIX domain socket when --host ends in .sock,
+          # mirroring llama-server's convention (see sandbox.sh --host).
+          # Applied inside the package set — not on the leaf application — so
+          # mlx-vlm, which depends on mlx-lm, shares the same patched build.
+          (final: prev: {
+            pythonPackagesExtensions = prev.pythonPackagesExtensions ++ [
+              (pyFinal: pyPrev: {
+                mlx-lm = pyPrev.mlx-lm.overrideAttrs (old: {
+                  patches = (old.patches or [ ]) ++ [ ./patches/mlx-lm-unix-socket.patch ];
+                });
+              })
+            ];
+          })
+        ];
       };
 
-      # `pi` bundled with the llama-cpp plugin: the upstream agent wrapped so the
-      # pinned pi-llama extension auto-loads on every run (`pi -e <store>/index.ts`,
-      # a position-independent repeatable flag) — no `pi install`, no flag to
-      # remember. Unsandboxed; for the seatbelt-wrapped variant use
-      # `sandboxed-ai pi`. The plugin finds your server via LLAMA_BASE_URL
-      # (default http://localhost:8080/v1).
-      pi = pkgs.runCommand "pi-with-llama-${pkgs.pi-coding-agent.version}"
-        {
-          nativeBuildInputs = [ pkgs.makeWrapper ];
-          meta = pkgs.pi-coding-agent.meta // {
-            mainProgram = "pi";
-            description = "pi-coding-agent bundled with the huggingface/pi-llama llama.cpp plugin";
-          };
-        }
-        ''
-          makeWrapper ${pkgs.lib.getExe pkgs.pi-coding-agent} $out/bin/pi \
-            --add-flags "-e ${pi-llama}/index.ts"
-        '';
+      # The interpreter whose package set carries the Metal wheel. Selected by
+      # the overlay (`mlx-python`) to match the CPython the wheel hash is
+      # pinned for — not hardcoded here, so a wheel/Python bump in dotfiles
+      # carries over with the next flake update.
+      mlxPython = pkgsMlx.mlx-python;
+
+      # `mlx_lm.server` (and the rest of the mlx_lm.* CLI) on PATH.
+      mlx-lm = mlxPython.pkgs.toPythonApplication mlxPython.pkgs.mlx-lm;
+
+      # `mlx_vlm.server`: OpenAI-compatible server for MLX *vision* models. Same
+      # Metal-enabled package set; sandbox.sh picks it automatically for models
+      # whose config carries a vision tower.
+      mlx-vlm = mlxPython.pkgs.toPythonApplication (
+        mlxPython.pkgs.mlx-vlm.overrideAttrs (old: {
+          propagatedBuildInputs = (old.propagatedBuildInputs or [ ]) ++ [
+            mlxPython.pkgs.torch
+            mlxPython.pkgs.torchvision
+          ];
+          # Serve on a UNIX domain socket when --host ends in .sock,
+          # mirroring llama-server's convention (see sandbox.sh --host).
+          patches = (old.patches or [ ]) ++ [ ./patches/mlx-vlm-unix-socket.patch ];
+        })
+      );
+
+      # `pi` bundled with the pinned huggingface/pi-llama llama.cpp plugin
+      # (auto-loaded via `pi -e <store>/index.ts` — no `pi install`, no
+      # network) and telemetry off. Packaged in aldur/dotfiles; through the
+      # input follows it builds against this flake's nixpkgs, so the agent
+      # version matches the `pkgs.pi-coding-agent` used elsewhere here.
+      # Unsandboxed; for the seatbelt-wrapped variant use `sandboxed-ai pi`.
+      # The plugin finds your server via LLAMA_BASE_URL (default
+      # http://localhost:8080/v1). Its pin is bumped by the dotfiles CI and
+      # lands here with flake.lock updates of the `dotfiles` input.
+      pi = dotfiles.packages.${system}.pi;
+      pi-llama = pi.plugins.pi-llama;
 
       # Self-contained launcher exposed as `sandboxed-ai` on PATH. Bundles
       # sandbox.sh together with the seatbelt profiles (*.sb) and the runtime it
       # shells out to, so it needs nothing from the working tree. Profiles are
       # read from next to the script in the store; writable state (models,
-      # cache, generated config) lives under the directory you run it from.
+      # caches, per-tool homes) lives under $XDG_STATE_HOME/sandboxed-ai.
       # Named `sandboxed-ai`, not `sandbox`, to avoid colliding with shells that
       # already define a `sandbox` abbreviation/function.
       sandboxed-ai = pkgs.stdenv.mkDerivation {
@@ -104,13 +144,12 @@
 
         src = pkgs.lib.fileset.toSource {
           root = ./.;
+          # sandbox.sh plus every seatbelt profile — one filter, so a new
+          # profile snippet is picked up here and by installPhase's glob
+          # without touching this file.
           fileset = pkgs.lib.fileset.unions [
             ./sandbox.sh
-            ./common.sb
-            ./llama-server.sb
-            ./llm.sb
-            ./opencode.sb
-            ./pi.sb
+            (pkgs.lib.fileset.fileFilter (f: f.hasExt "sb") ./profiles)
           ];
         };
 
@@ -122,7 +161,7 @@
           runHook preInstall
           libexec=$out/libexec/sandboxed-ai
           install -Dm755 sandbox.sh $libexec/sandbox.sh
-          install -m444 common.sb llama-server.sb llm.sb opencode.sb pi.sb $libexec/
+          install -Dm444 -t $libexec/profiles profiles/*.sb
           makeWrapper $libexec/sandbox.sh $out/bin/sandboxed-ai \
             --set SANDBOXED_AI_PROG sandboxed-ai \
             --set PI_LLAMA_DIR ${pi-llama} \
@@ -135,7 +174,8 @@
                 pkgs.gnused
                 llama-cpp
                 llm
-                pkgs.opencode
+                mlx-lm
+                mlx-vlm
                 pkgs.pi-coding-agent
               ]
             }
@@ -147,18 +187,43 @@
     in
     {
       packages.${system} = {
-        inherit llama-cpp llm pi pi-llama sandboxed-ai;
+        inherit
+          llama-cpp
+          llm
+          mlx-lm
+          mlx-vlm
+          pi
+          pi-llama
+          sandboxed-ai
+          ;
         default = sandboxed-ai;
       };
 
-      devShells.${system}.default = pkgs.mkShell {
-        packages = [
-          llama-cpp
-          llm
-          pkgs.opencode
-          pkgs.pi-coding-agent
-          sandboxed-ai
-        ];
+      devShells.${system} = {
+        default = pkgs.mkShell {
+          packages = [
+            sandboxed-ai
+            pkgs.python3
+          ];
+
+          LLAMA_SERVER = "${llama-cpp}/bin/llama-server";
+          MLX_SERVER = "${mlx-lm}/bin/mlx_lm.server";
+          MLX_VLM_SERVER = "${mlx-vlm}/bin/mlx_vlm.server";
+          LLM = "${llm}/bin/llm";
+          PI = "${pkgs.pi-coding-agent}/bin/pi";
+          PI_LLAMA_DIR = "${pi-llama}";
+        };
+
+        # The tools themselves, unsandboxed, for when needed.
+        tools = pkgs.mkShell {
+          packages = [
+            llama-cpp
+            llm
+            mlx-lm
+            mlx-vlm
+            pkgs.pi-coding-agent
+          ];
+        };
       };
     };
 }

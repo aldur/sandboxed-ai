@@ -1,0 +1,69 @@
+; vim:ft=scheme
+;; common.sb — base rules imported first by every profile; the servers
+;; additionally import server.sb, the clients client.sb.
+;;
+;; What is not here is deliberate: system.sb already grants the system
+;; libraries, /dev/null and the standard streams. tests/ablate.py keeps
+;; this set honest by removing each grant and re-running the tools.
+
+(import "system.sb")
+(import "com.apple.corefoundation.sb")
+
+;; ── Re-arm what system.sb hands out wholesale ────────────
+;; system.sb grants `(allow sysctl-read)` and an unfiltered process-info
+;; under "mostly harmless operations". Neither is harmless here: the
+;; process-info grant exposes other processes' argv (via KERN_PROCARGS2)
+;; and executable paths, and command lines routinely carry credentials —
+;; which would hand back exactly what the env allowlist in sandbox.sh
+;; takes away. Allows are additive and the last matching rule wins, so
+;; deny both here; every allowlist below is what actually takes effect.
+(deny sysctl-read)
+(deny process-info*)
+;; Same shape: (version 1) makes system.sb grant every XPC service by name
+;; prefix, and CoreFoundation's import grants every preference domain.
+;; server.sb re-allows the one XPC service Metal needs.
+(deny mach-lookup (xpc-service-name-prefix ""))
+(deny user-preference-read)
+
+;; ── Process basics ───────────────────────────────────────
+(allow process-info-pidinfo (target self))
+
+;; ── Sysctl (read-only) ───────────────────────────────────
+;; Hardware topology and OS version: what the runtimes probe to size thread
+;; pools and pick code paths. Neither carries an identifier (no serial, no
+;; UUID — checked), unlike kern.uuid or the net.* tree, which the deny
+;; above keeps out. kern.hostname is what getfqdn() resolves at bind.
+(allow sysctl-read
+  (sysctl-name-prefix "hw.")
+  (sysctl-name "kern.hostname")
+  (sysctl-name "kern.osrelease")
+  (sysctl-name "kern.ostype")
+  (sysctl-name "kern.version"))
+
+;; ── Package store (read + executable mapping) ───────────
+;; Set by sandbox.sh: /nix for Nix, /opt/homebrew for Homebrew.
+(allow file-read* file-map-executable
+  (subpath (param "PKG_STORE")))
+
+;; ── Path traversal (stat on parent directories) ─────────
+;; SQLite and other tools need to stat() ancestor directories when
+;; resolving absolute paths, and the per-user darwin dirs the servers get
+;; sit two levels inside /private/var/folders. Metadata only — directory
+;; existence checks, not file contents — and scoped to the invoking user's
+;; home rather than all of /Users, so other accounts on the machine are
+;; not enumerable. HOME_PARENT (/Users) is a bare literal, not a subpath:
+;; sqlite stats every ancestor of its database, and stat of that one
+;; directory entry reveals nothing about what is inside it.
+(allow file-read-metadata
+  (subpath (param "HOME_DIR"))
+  (literal (param "HOME_PARENT"))
+  (subpath "/private/var/folders"))
+
+;; ── Inherited stdout/stderr ──────────────────────────────
+;; Where the caller redirected them, when that is a file: the descriptor
+;; is already open, but a runtime that stats or reopens its own stdio (as
+;; Node does at startup) needs the path to resolve. sandbox.sh passes
+;; /dev/null when they are a pipe or a terminal.
+(allow file-read-metadata file-write-data
+  (literal (param "STDOUT_PATH"))
+  (literal (param "STDERR_PATH")))

@@ -1,0 +1,67 @@
+; vim:ft=scheme
+;; server.sb — shared rules for the model servers, imported by
+;; llama-server.sb and mlx-server.sb after common.sb: GPU access, model
+;; weights and caches, and the serving network personality. Each server
+;; adds its own executable rule.
+
+(deny process-fork)
+
+;; ── Mach (GPU) ───────────────────────────────────────────
+;; Shader compilation runs in an XPC service, so it needs an
+;; xpc-service-name lookup — common.sb denies the wildcard that (version 1)
+;; would otherwise hand out. Only reached when the Metal cache is cold: a
+;; warm cache means a precompiled library and no compiler at all, so
+;; tests/e2e.sh clears the cache to exercise this.
+(allow mach-lookup
+  (xpc-service-name "com.apple.MTLCompilerService"))
+
+;; ── IOKit: GPU ───────────────────────────────────────────
+;; The two user clients Metal needs, and nothing further: no Neural Engine
+;; (neither llama.cpp nor MLX reaches it — that is CoreML), no AGX
+;; clients. This is the floor for talking to the GPU; see the README on
+;; what that means for the threat model.
+(allow iokit-open
+  (iokit-user-client-class "IOGPUDeviceUserClient")
+  (iokit-user-client-class "IOSurfaceRootUserClient"))
+
+;; ── Filesystem ───────────────────────────────────────────
+;; Model weights (read-only)
+(allow file-read*
+  (subpath (param "MODEL_DIR")))
+
+;; Metal shader / PSO cache — the only directory a server writes to.
+;; Neither engine needs scratch space of its own, images included.
+(allow file-read* file-write* file-lock
+  (subpath (param "CACHE_DIR")))
+
+;; ── Apple's per-user temp/cache (servers only) ───────────
+;; Metal and CoreFoundation reach these via confstr(_CS_DARWIN_USER_*_DIR);
+;; TMPDIR cannot redirect them, and shader compilation needs to map from
+;; them executable. Granted here rather than in common.sb so the clients —
+;; which have no GPU work to do — cannot reach the shader/PSO cache that a
+;; server later loads while holding the GPU and the weights. Within the
+;; cache only Metal's own two namespaces are granted; the other ~200 belong
+;; to unrelated applications. sandbox.sh creates them if absent.
+(allow file-read* file-write* file-map-executable file-lock
+  (subpath (param "DARWIN_USER_TEMP_DIR"))
+  (subpath (param "DARWIN_METAL_CACHE"))
+  (subpath (param "DARWIN_METALFE_CACHE")))
+
+;; ── Sandbox extensions for MTLCompilerService ──────────
+;; The compiler XPC service reaches those paths through extensions the
+;; server issues. MLX needs this to build its kernels from a cold cache.
+(allow file-issue-extension
+  (require-all
+    (extension-class "com.apple.app-sandbox.read-write")
+    (require-any
+      (subpath (param "DARWIN_USER_TEMP_DIR"))
+      (subpath (param "DARWIN_METAL_CACHE"))
+      (subpath (param "DARWIN_METALFE_CACHE")))))
+
+;; ── Network ──────────────────────────────────────────────
+;; Serving personality chosen by sandbox.sh — see net-tcp.sb / net-unix.sb.
+;; Outbound denied: the model is fully local, so the server has no reason
+;; to dial out.
+(import (param "NET_SB"))
+
+(deny network-outbound (with send-signal SIGKILL))

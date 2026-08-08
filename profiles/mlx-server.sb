@@ -1,0 +1,42 @@
+; vim:ft=scheme
+(version 1)
+(deny default)
+
+;; mlx server sandbox — Python + MLX (Metal); the GPU/network surface
+;; comes from server.sb, this file adds what CPython needs on top.
+(import (param "COMMON_SB"))
+(import (param "SERVER_SB"))
+
+;; ── Process ──────────────────────────────────────────────
+;; Unlike llama-server (a single binary pinned by literal path), the
+;; server is a script: it execs its shebang interpreter, and a nix build
+;; adds a wrapper indirection on top. sandbox.sh walks that chain (see
+;; resolve_mlx_exec) so the grant names the two-to-four files involved
+;; rather than every executable in the package store. Unused links are
+;; passed as /dev/null, which cannot be exec'd.
+(allow process-exec
+  (literal (param "MLX_SERVER"))
+  (literal (param "MLX_INTERP"))
+  (literal (param "MLX_WRAPPED"))
+  (literal (param "MLX_WRAPPED_INTERP")))
+
+;; ── Filesystem ───────────────────────────────────────────
+;; Python's http.server calls getfqdn() at bind; with the hosts file
+;; readable, libinfo resolves 127.0.0.1 → localhost from it and never
+;; falls through to mDNSResponder (whose socket the deny below kills on).
+(allow file-read*
+  (literal "/private/etc/hosts"))
+
+;; TLS trust store: nixpkgs' certifi opens this path verbatim at import,
+;; and huggingface_hub builds an SSL context even under HF_HUB_OFFLINE
+;; (see resolve_ca_file in sandbox.sh).
+(allow file-read*
+  (literal (param "CA_FILE")))
+
+;; ── Network ──────────────────────────────────────────────
+;; Safety net for any lookup the hosts file doesn't answer: libinfo then
+;; dials mDNSResponder over its UNIX socket. Still denied — but without
+;; server.sb's SIGKILL, so the resolver gets EPERM and fails gracefully
+;; instead of the process dying mid-lookup. Must stay after that import:
+;; the last matching rule wins.
+(deny network-outbound (literal "/private/var/run/mDNSResponder"))

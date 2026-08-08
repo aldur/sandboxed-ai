@@ -3,8 +3,8 @@
 This repository provides `sandbox-exec` profiles to run:
 
 1. [`llama-server`][1]
+1. [`mlx_lm.server`][5]
 1. [`pi`][4]
-1. [`opencode`][2]
 1. [`simonw/llm`][3]
 
 [sandbox.sh](./sandbox.sh) script takes care of setting up the sandbox
@@ -21,6 +21,8 @@ See [this blog post][0] for background, more info, and Qwen3.5 test-runs.
 
 The [sandbox.sh](./sandbox.sh) script does the heavy lifting.
 
+### `llama.cpp`
+
 ```bash
 # Install llama.cpp, or use `nix develop`
 brew install llama.cpp
@@ -30,30 +32,43 @@ brew install llama.cpp
 
 # Binds to localhost:8080
 # Additional arguments go to `llama-server`
+# --mmproj automatically handles the download of multimodal projector
 ```
 
 The sandbox is default-deny and only allows access to the GPU and the models.
 Network access is disabled for `llama-server`. Models are downloaded through
 `curl` (outside of the sandbox).
 
+### `mlx-lm`
+
+[MLX][5]'s' `mlx_lm.server` exposes the an OpenAI-compatible API as well
+
 ```bash
-# Install opencode or use `nix develop`
-brew install opencode pi-coding-agent
+# Install mlx_lm or use `nix develop`
+brew install mlx-lm
+
+# Sandbox it and run it
+./sandbox.sh mlx-server --model mlx-community/Qwen3-8B-4bit
+
+# Vision models are automatically detected and served with `mlx_vlm.server`.
+```
+
+### `pi`
+
+```bash
+# Install pi or use `nix develop`
+brew install pi-coding-agent
+pi install npm:pi-llama-cpp
 
 # Run it in the sandbox
 # Use `-w` to specify a workspace directory
-./sandbox.sh opencode
-
-# Same for `pi`
-brew install pi-coding-agent
-pi install npm:pi-llama-cpp
 ./sandbox.sh pi
 ```
 
-The sandbox prevents `opencode` and `pi` from reaching the internet and
-constraints writes to the workspace (the script directory by default). See
-[this blog post][0] for how to run un-sandboxed `opencode` in a Linux VM that
-connects to the local instance of `llama-server`.
+The sandbox prevents `pi` from reaching the internet and constrains writes
+to the workspace (the current directory by default). See [this blog post][0]
+for how to run un-sandboxed agents in a Linux VM that connect to the local
+server instance.
 
 ## Usage
 
@@ -62,7 +77,7 @@ Usage: sandbox.sh <command> [options]
 
 Commands:
   llama-server  Start the llama-server (sandboxed)
-  opencode  Start opencode (sandboxed)
+  mlx-server    Start mlx_lm.server (sandboxed)
   pi            Start pi (pi-coding-agent) with the llama-cpp plugin (sandboxed)
   llm           Run llm CLI (sandboxed)
 
@@ -70,30 +85,51 @@ llama-server options:
   --model SPEC          Local path, HF file (org/repo:file.gguf), or
                         HF quant (org/repo:Q4_K_M). Omit the part after ':'
                         to list available GGUF files.
+  --mmproj SPEC         Multimodal projector for vision models, same spec
+                        grammar. Quant labels match only mmproj-*.gguf files.
+  --host ADDR           TCP address to bind (default 127.0.0.1), or a
+                        UNIX domain socket when ADDR ends in .sock.
+  --port PORT           TCP port to bind (default 8080).
   All other flags are passed through to llama-server.
 
-opencode options:
-  -w, --workspace DIR   Workspace directory (default: script dir)
-  Additional args are passed through to opencode.
+mlx-server options:
+  --model SPEC          Local model directory or HF repo of an MLX model
+                        (e.g. mlx-community/Qwen3-8B-4bit). Vision models
+                        (config.json with a vision tower) are served with
+                        mlx_vlm.server, text models with mlx_lm.server.
+  --host ADDR           TCP address to bind (default 127.0.0.1), or a
+                        UNIX domain socket when ADDR ends in .sock.
+  --port PORT           TCP port to bind (default 8080).
+  All other flags are passed through to the server.
 
 pi options:
-  -w, --workspace DIR   Workspace directory (default: project dir)
+  -w, --workspace DIR   Workspace directory (default: current directory)
   Additional args are passed through to pi.
 
 llm options:
-  -m, --model MODEL     Model name (default: llama-server)
-  Additional args are passed through to llm.
+  All args are passed through to llm (use its -m to pick a model; the
+  default model is preset to "llama-server").
 
 Environment:
-  MODEL             Model spec (overridden by --model)
-  LLAMA_SERVER      Explicit path to llama-server binary (fallback: PATH)
-  PI                Explicit path to pi binary (fallback: PATH)
-  PI_LLAMA_DIR      Dir holding the pi llama-cpp plugin's index.ts
-                    (set by the Nix wrapper; required for the pi command)
+  XDG_STATE_HOME     Parent of the per-user dir holding models, caches and
+                     each tool's home (default: ~/.local/state)
+  SANDBOXED_AI_MODELS
+                     Model directory, for weights on another volume
+                     (default: $XDG_STATE_HOME/sandboxed-ai/models)
+  SANDBOXED_AI_PROG  Program name shown in this help (set by the Nix wrapper)
+  MODEL              Model spec (overridden by --model)
+  MMPROJ             Projector spec (overridden by --mmproj)
+  LLAMA_SERVER, MLX_SERVER, MLX_VLM_SERVER, PI, LLM
+                     Explicit binary paths (fallback: PATH lookup)
+  PI_LLAMA_DIR       Dir holding the pi llama-cpp plugin's index.ts
+                     (set by the Nix wrapper; required for the pi command)
+  NIX_SSL_CERT_FILE  CA bundle granted read-only to the mlx sandbox
+  LLAMA_API_KEY, OPENAI_API_KEY
+                     Client API keys; local servers accept the "dummy" default
 ```
 
 [0]: https://aldur.blog/articles/2026/03/12/sandboxing-local-models-on-macos
 [1]: https://github.com/ggml-org/llama.cpp
-[2]: https://opencode.ai/
 [3]: https://github.com/simonw/llm
 [4]: https://pi.dev/
+[5]: https://github.com/ml-explore/mlx-lm

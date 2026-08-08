@@ -1,4 +1,3 @@
-unsloth
-.opencode
 result
-opencode.json
+.direnv
+/tests/__pycache__
