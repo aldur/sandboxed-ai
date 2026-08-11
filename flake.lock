@@ -7,8 +7,8 @@
         "dashp": [],
         "detnix": [],
         "flake-utils": "flake-utils",
+        "gh-signing-keys": "gh-signing-keys",
         "home-manager": [],
-        "neovim-nightly-overlay": [],
         "nix-index-database": [],
         "nixCats": [],
         "nixpkgs": [
@@ -22,11 +22,11 @@
         "systems": "systems"
       },
       "locked": {
-        "lastModified": 1785776613,
-        "narHash": "sha256-3HZnIntoejF6DZfNl2N1oCsTaY+7MgZT6ErbGK4wnsc=",
+        "lastModified": 1786393046,
+        "narHash": "sha256-vOItRsaMB4qo25ye+BvNkFfaYM87+8SFV7+CCLDBSI4=",
         "owner": "aldur",
         "repo": "dotfiles",
-        "rev": "7893b58d3e04be358efefb81784247f0c3be56e5",
+        "rev": "402da77f24e264d7215421ed3f4f65bfdc4bf7d2",
         "type": "github"
       },
       "original": {
@@ -56,6 +56,18 @@
         "type": "github"
       }
     },
+    "gh-signing-keys": {
+      "flake": false,
+      "locked": {
+        "narHash": "sha256-se65vQP9ypXDnXUAW/prNtPqNyeuHJjUgvuYxxMgGrw=",
+        "type": "file",
+        "url": "https://api.github.com/users/aldur/ssh_signing_keys"
+      },
+      "original": {
+        "type": "file",
+        "url": "https://api.github.com/users/aldur/ssh_signing_keys"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1785747939,
@@ -74,11 +86,11 @@
     },
     "nixpkgs-darwin": {
       "locked": {
-        "lastModified": 1784182977,
-        "narHash": "sha256-Hy8zg2HEcsk4WqowQK3UKRXz1fdQM7Z2un3nSyLbJaQ=",
+        "lastModified": 1785067121,
+        "narHash": "sha256-rdJdWxAcg5fnntU4DjPivPdVEN4F+VJavw+UWpEMeUI=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "29c22b7761070f37c4c2b0dd6a8777f0bd43e268",
+        "rev": "329c3d2af6d1b618705150ea39f72c15eb4e613e",
         "type": "github"
       },
       "original": {
