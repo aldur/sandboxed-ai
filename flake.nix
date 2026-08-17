@@ -149,6 +149,7 @@
           # without touching this file.
           fileset = pkgs.lib.fileset.unions [
             ./sandbox.sh
+            ./hf.sh
             (pkgs.lib.fileset.fileFilter (f: f.hasExt "sb") ./profiles)
           ];
         };
@@ -161,6 +162,7 @@
           runHook preInstall
           libexec=$out/libexec/sandboxed-ai
           install -Dm755 sandbox.sh $libexec/sandbox.sh
+          install -Dm444 hf.sh $libexec/hf.sh
           install -Dm444 -t $libexec/profiles profiles/*.sb
           makeWrapper $libexec/sandbox.sh $out/bin/sandboxed-ai \
             --set SANDBOXED_AI_PROG sandboxed-ai \

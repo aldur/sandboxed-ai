@@ -33,11 +33,19 @@ brew install llama.cpp
 # Binds to localhost:8080
 # Additional arguments go to `llama-server`
 # --mmproj automatically handles the download of multimodal projector
+
+# Draft models (`-hfd`/`--model-draft`) and chat template files use the
+# same spec grammar:
+./sandbox.sh llama-server \
+  -hf ggml-org/Qwen3.8-27B-GGUF:Q4_K_M \
+  -hfd ggml-org/Qwen3.8-27B-GGUF:Q4_0 \
+  --jinja --chat-template-file froggeric/Qwen-Fixed-Chat-Templates:chat_template.jinja
 ```
 
 The sandbox is default-deny and only allows access to the GPU and the models.
-Network access is disabled for `llama-server`. Models are downloaded through
-`curl` (outside of the sandbox).
+Network access is disabled for `llama-server`. Models, draft models, and
+chat templates are downloaded through `curl` (outside of the sandbox) and
+checksum-verified. The sandbox reads them read-only.
 
 ### `mlx-lm`
 
@@ -84,7 +92,14 @@ Commands:
 llama-server options:
   --model SPEC          Local path, HF file (org/repo:file.gguf), or
                         HF quant (org/repo:Q4_K_M). Omit the part after ':'
-                        to list available GGUF files.
+                        to list available GGUF files. llama-server's
+                        -hf/-hfr/--hf-repo are accepted as aliases.
+  --model-draft SPEC    Draft model for speculative decoding, same spec
+                        grammar (aliases: -md, -hfd, -hfrd, --hf-repo-draft).
+  --chat-template-file SPEC
+                        Chat template: local path or HF file
+                        (org/repo:file.jinja). Omit the part after ':' to
+                        list the repo's .jinja files. Pair with --jinja.
   --mmproj SPEC         Multimodal projector for vision models, same spec
                         grammar. Quant labels match only mmproj-*.gguf files.
   --host ADDR           TCP address to bind (default 127.0.0.1), or a

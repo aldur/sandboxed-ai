@@ -10,9 +10,12 @@
 (allow process-exec
   (literal (param "LLAMA_SERVER")))
 
-;; ── Multimodal projector (read-only) ─────────────────────
+;; ── Projector, draft model, chat template (read-only) ────
 ;; The model itself is covered by server.sb's MODEL_DIR rule. MMPROJ_DIR
-;; falls back to MODEL_DIR when no projector is in play — sandbox-exec
-;; errors out on parameters referenced but not passed.
+;; and DRAFT_DIR fall back to MODEL_DIR, and CHAT_TEMPLATE_FILE to
+;; /dev/null, when not in play — sandbox-exec errors out on parameters
+;; referenced but not passed.
 (allow file-read*
-  (subpath (param "MMPROJ_DIR")))
+  (subpath (param "MMPROJ_DIR"))
+  (subpath (param "DRAFT_DIR"))
+  (literal (param "CHAT_TEMPLATE_FILE")))
