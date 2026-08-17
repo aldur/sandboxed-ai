@@ -92,8 +92,53 @@ info() { printf '  %-14s %s\n' "$1" "$2"; }
   die "$SANDBOX_EXEC not found or not executable — seatbelt is required"
 
 # Shared Hugging Face download and resolution machinery (also sourced by
-# sandbox-linux.sh). It uses die, info and MODELS_DIR from this file.
+# sandbox-linux.sh). It uses die, info, MODELS_DIR and hf_curl from this
+# file.
 . "$SCRIPT_DIR/hf.sh"
+
+# ── Sandboxed fetch ───────────────────────────────────────
+# hf.sh reaches Hugging Face only through this function: curl inside its
+# own seatbelt (hf-fetch.sb). It runs unsandboxed nowhere — a hostile
+# response that exploits curl gets TLS out and MODELS_DIR, not the user
+# account. -q comes first so ~/.curlrc cannot inject options, and the
+# empty environment drops the proxy variables for the same reason.
+#
+# The CA bundle is passed explicitly (--cacert): under `env -i` curl
+# cannot see SSL_CERT_FILE, and the profile grants exactly one bundle.
+# First match wins: the nix-darwin bundle, a generic override, then the
+# system one — present on every macOS.
+hf_curl_init() {
+  HF_CURL_BIN="$(resolve_binary "${CURL:-}" curl CURL)"
+  case "$HF_CURL_BIN" in
+  /usr/*) HF_CURL_STORE=/usr ;; # system curl: no package store
+  *) HF_CURL_STORE="$(pkg_store_for "$HF_CURL_BIN")" ;;
+  esac
+  local ca
+  HF_CA_FILE=""
+  for ca in "${NIX_SSL_CERT_FILE:-}" "${SSL_CERT_FILE:-}" /etc/ssl/cert.pem; do
+    [[ -n "$ca" && -f "$ca" ]] || continue
+    HF_CA_FILE="$(realpath "$ca" 2>/dev/null)" && break
+    HF_CA_FILE=""
+  done
+  [[ -n "$HF_CA_FILE" ]] ||
+    die "no CA bundle found for the fetch sandbox (set NIX_SSL_CERT_FILE or SSL_CERT_FILE)"
+}
+
+hf_curl() {
+  [[ -n "${HF_CURL_BIN:-}" ]] || hf_curl_init
+  env -i "$SANDBOX_EXEC" \
+    -D COMMON_SB="$PROFILES_DIR/common.sb" \
+    -D PKG_STORE="$HF_CURL_STORE" \
+    -D HOME_DIR="$HOME_DIR" \
+    -D HOME_PARENT="$HOME_PARENT" \
+    -D STDOUT_PATH=/dev/null \
+    -D STDERR_PATH=/dev/null \
+    -D CURL="$HF_CURL_BIN" \
+    -D MODELS_DIR="$MODELS_DIR" \
+    -D CA_FILE="$HF_CA_FILE" \
+    -f "$PROFILES_DIR/hf-fetch.sb" \
+    "$HF_CURL_BIN" -q --cacert "$HF_CA_FILE" "$@"
+}
 
 usage() {
   cat >&2 <<EOF
@@ -159,7 +204,7 @@ Environment:
   SANDBOXED_AI_PROG  Program name shown in this help (set by the Nix wrapper)
   MODEL              Model spec (overridden by --model)
   MMPROJ             Projector spec (overridden by --mmproj)
-  LLAMA_SERVER, LLAMA_BENCH, MLX_SERVER, MLX_VLM_SERVER, PI, LLM
+  LLAMA_SERVER, LLAMA_BENCH, MLX_SERVER, MLX_VLM_SERVER, PI, LLM, CURL
                      Explicit binary paths (fallback: PATH lookup)
   PI_LLAMA_DIR       Dir holding the pi llama-cpp plugin's index.ts
                      (set by the Nix wrapper; required for the pi command)

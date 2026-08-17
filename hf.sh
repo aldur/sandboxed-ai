@@ -3,7 +3,9 @@
 # sandbox starts: the sandboxes deny network access, so downloads happen
 # out here and land in MODELS_DIR, which the sandboxes only read.
 #
-# The sourcing script must define: die, info, MODELS_DIR.
+# The sourcing script must define: die, info, MODELS_DIR, and hf_curl —
+# the one route to the network, with curl's argv as its arguments. On
+# macOS that is itself a sandbox (see hf_curl in sandbox.sh).
 #
 # Everything fetched here is later parsed by a server inside the sandbox —
 # weights by llama.cpp/MLX, and config.json even decides which server binary
@@ -40,7 +42,7 @@ abspath() {
 # (grep-escaped) filename-suffix pattern. Empty output when offline or the
 # repo is unknown.
 hf_listing() {
-  curl -sf "https://huggingface.co/api/models/$1" |
+  hf_curl -sf "https://huggingface.co/api/models/$1" |
     grep -o "\"rfilename\":\"[^\"]*${2:-}\"" |
     sed 's/"rfilename":"//;s/"//'
 }
@@ -111,7 +113,7 @@ declare -A HF_DIGEST=()
 hf_load_digests() {
   HF_DIGEST=()
   local json entry path
-  json="$(curl -sf "https://huggingface.co/api/models/$1/tree/main?recursive=1")" ||
+  json="$(hf_curl -sf "https://huggingface.co/api/models/$1/tree/main?recursive=1")" ||
     return 0
   # One JSON array on one line: split it into an entry per line first.
   while IFS= read -r entry; do
@@ -168,9 +170,9 @@ hf_download() {
       info "retry:" "$file (fresh download)" >&2
     }
     info "download:" "$file" >&2
-    curl -fL -C - --progress-bar -o "$target" "$url" || {
+    hf_curl -fL -C - --progress-bar -o "$target" "$url" || {
       # Only now pay for a HEAD probe, to say *why* it failed.
-      http_code="$(curl -sI -o /dev/null -w '%{http_code}' "$url")" || http_code="000"
+      http_code="$(hf_curl -sI -o /dev/null -w '%{http_code}' "$url")" || http_code="000"
       [[ "$http_code" == 200 || "$http_code" == 302 ]] ||
         die "file not found on HF (HTTP $http_code): $repo/$file"
       die "failed to download $repo/$file"

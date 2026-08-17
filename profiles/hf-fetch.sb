@@ -1,0 +1,35 @@
+; vim:ft=scheme
+(version 1)
+(deny default)
+
+;; hf-fetch sandbox — the host-side Hugging Face download step, the one
+;; component that talks to the internet. The inverse of the server
+;; profiles: TLS out and writes only inside MODELS_DIR; no GPU, no other
+;; reads. curl runs with -q and an empty environment, so no ~/.curlrc or
+;; proxy variable can steer it (see hf_curl in sandbox.sh).
+(import (param "COMMON_SB"))
+
+(deny process-fork)
+
+;; ── Process: the single pinned binary ────────────────────
+(allow process-exec
+  (literal (param "CURL")))
+
+;; ── Network: TLS out, plus name resolution ───────────────
+;; 443 only: huggingface.co and its CDN redirect targets all serve TLS.
+(allow network-outbound
+  (remote tcp "*:443"))
+;; getaddrinfo resolves through mDNSResponder's socket (older libinfo)
+;; or the dnssd service (newer macOS).
+(allow network-outbound
+  (literal "/private/var/run/mDNSResponder"))
+(allow mach-lookup
+  (global-name "com.apple.dnssd.service"))
+
+;; ── Filesystem ───────────────────────────────────────────
+;; Downloads land only here; -C - also reads the partial file to resume.
+(allow file-read* file-write*
+  (subpath (param "MODELS_DIR")))
+;; The CA bundle, passed explicitly as --cacert (see hf_curl).
+(allow file-read*
+  (literal (param "CA_FILE")))
