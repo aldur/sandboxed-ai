@@ -14,7 +14,6 @@
         dashp.follows = "";
         detnix.follows = "";
         home-manager.follows = "";
-        neovim-nightly-overlay.follows = "";
         nix-index-database.follows = "";
         nixCats.follows = "";
         preservation.follows = "";
