@@ -77,8 +77,15 @@ HOME_PARENT="${HOME_DIR%/*}"
 [[ -n "$HOME_PARENT" ]] || HOME_PARENT=/
 
 SANDBOX_EXEC=/usr/bin/sandbox-exec
+# The other macOS system tools this script runs before any sandbox
+# exists, pinned by absolute path for the SANDBOX_EXEC reason above: a
+# PATH stub would run them as the real user. All ship with macOS under
+# SIP-protected paths.
+GETCONF=/usr/bin/getconf
+LSOF=/usr/sbin/lsof
+TTY=/usr/bin/tty
 # PORT stays writable: the server subcommands take --port.
-readonly SCRIPT_DIR PROFILES_DIR PROG STATE_DIR MODELS_DIR HOME_DIR HOME_PARENT SANDBOX_EXEC
+readonly SCRIPT_DIR PROFILES_DIR PROG STATE_DIR MODELS_DIR HOME_DIR HOME_PARENT SANDBOX_EXEC GETCONF LSOF TTY
 
 # ── Output & usage ────────────────────────────────────────
 die() {
@@ -124,6 +131,15 @@ hf_curl_init() {
     die "no CA bundle found for the fetch sandbox (set NIX_SSL_CERT_FILE or SSL_CERT_FILE)"
 }
 
+# Transport policy for every fetch, shared with sandbox-linux.sh's hook:
+# HTTPS only, redirects included (-L must never land on http:), a bounded
+# connect, and a stall abort (< 1 KB/s for 60 s) instead of --max-time —
+# a large model legitimately downloads for longer than any sane cap.
+readonly -a HF_CURL_OPTS=(
+  --proto '=https' --proto-redir '=https'
+  --connect-timeout 30 --speed-limit 1024 --speed-time 60
+)
+
 hf_curl() {
   [[ -n "${HF_CURL_BIN:-}" ]] || hf_curl_init
   env -i "$SANDBOX_EXEC" \
@@ -137,7 +153,7 @@ hf_curl() {
     -D MODELS_DIR="$MODELS_DIR" \
     -D CA_FILE="$HF_CA_FILE" \
     -f "$PROFILES_DIR/hf-fetch.sb" \
-    "$HF_CURL_BIN" -q --cacert "$HF_CA_FILE" "$@"
+    "$HF_CURL_BIN" -q "${HF_CURL_OPTS[@]}" --cacert "$HF_CA_FILE" "$@"
 }
 
 usage() {
@@ -257,10 +273,10 @@ pkg_store_for() {
 # symlink and normalizes the path. Sets DARWIN_USER_TEMP_DIR and
 # DARWIN_USER_CACHE_DIR.
 resolve_darwin_dirs() {
-  DARWIN_USER_TEMP_DIR="$(realpath "$(getconf DARWIN_USER_TEMP_DIR)" 2>/dev/null)" ||
+  DARWIN_USER_TEMP_DIR="$(realpath "$("$GETCONF" DARWIN_USER_TEMP_DIR)" 2>/dev/null)" ||
     die "cannot resolve DARWIN_USER_TEMP_DIR"
   local cache
-  cache="$(realpath "$(getconf DARWIN_USER_CACHE_DIR)" 2>/dev/null)" ||
+  cache="$(realpath "$("$GETCONF" DARWIN_USER_CACHE_DIR)" 2>/dev/null)" ||
     die "cannot resolve DARWIN_USER_CACHE_DIR"
   # Only Metal's own namespaces are granted, not the whole cache: the other
   # ~200 directories there belong to unrelated applications. Created here
@@ -318,7 +334,7 @@ resolve_mlx_exec() {
 # sandbox-exec errors on a never-passed one), which also covers a
 # non-interactive run where there is no ctty to grant.
 resolve_tty() {
-  TTY_DEV="$(tty 2>/dev/null)" && [[ "$TTY_DEV" == /dev/* ]] || TTY_DEV="/dev/null"
+  TTY_DEV="$("$TTY" 2>/dev/null)" && [[ "$TTY_DEV" == /dev/* ]] || TTY_DEV="/dev/null"
 }
 
 # The CA bundle the mlx profile grants read on: huggingface_hub builds an
@@ -349,8 +365,8 @@ resolve_ca_file() {
 # True when some process holds $1 open, i.e. it is a live socket rather
 # than a leftover. Conservative: with no lsof, nothing is reported in use.
 socket_in_use() {
-  command -v lsof >/dev/null || return 1
-  [[ -n "$(lsof -t -- "$1" 2>/dev/null)" ]]
+  [[ -x "$LSOF" ]] || return 1
+  [[ -n "$("$LSOF" -t -- "$1" 2>/dev/null)" ]]
 }
 
 select_net() {
@@ -415,11 +431,11 @@ select_net() {
 resolve_stdio() {
   STDOUT_PATH=/dev/null
   STDERR_PATH=/dev/null
-  command -v lsof >/dev/null || return 0
+  [[ -x "$LSOF" ]] || return 0
   local fd var path
   for fd in 1 2; do
     [[ -f "/dev/fd/$fd" ]] || continue
-    path="$(lsof -a -d "$fd" -p $$ -Fn 2>/dev/null | grep '^n' | cut -c2- | head -1)" || continue
+    path="$("$LSOF" -a -d "$fd" -p $$ -Fn 2>/dev/null | grep '^n' | cut -c2- | head -1)" || continue
     [[ -n "$path" && "$path" == /* ]] || continue
     var="STDOUT_PATH"
     [[ "$fd" == 2 ]] && var="STDERR_PATH"

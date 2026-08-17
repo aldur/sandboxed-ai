@@ -171,6 +171,7 @@
                 pkgs.bash
                 pkgs.coreutils
                 pkgs.curl
+                pkgs.findutils
                 pkgs.gnugrep
                 pkgs.gnused
                 llama-cpp

@@ -67,11 +67,14 @@ safe_rel_path() {
   return 0
 }
 
-# Hex SHA digest of stdin, $1 bits wide. macOS ships shasum (perl);
-# Linux ships sha1sum/sha256sum (coreutils).
+# Hex SHA digest of stdin, $1 bits wide. This digest gates everything a
+# sandbox later trusts, so the tool computing it must not come from the
+# caller's PATH (the SANDBOX_EXEC rationale in sandbox.sh): macOS pins
+# its SIP-protected system shasum (perl); Linux falls back to
+# sha1sum/sha256sum (coreutils).
 sha_hex() {
-  if command -v shasum >/dev/null; then
-    shasum -a "$1" 2>/dev/null | cut -d' ' -f1
+  if [[ -x /usr/bin/shasum ]]; then
+    /usr/bin/shasum -a "$1" 2>/dev/null | cut -d' ' -f1
   else
     "sha$1sum" 2>/dev/null | cut -d' ' -f1
   fi
