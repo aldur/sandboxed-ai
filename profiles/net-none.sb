@@ -1,0 +1,4 @@
+; vim:ft=scheme
+;; No-network personality — imported for NET_SB by sandboxes that serve
+;; nothing (llama-bench). Grants no bind/inbound surface at all; outbound
+;; is already denied by server.sb. It consumes no NET_TARGET.

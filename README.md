@@ -85,6 +85,7 @@ Usage: sandbox.sh <command> [options]
 
 Commands:
   llama-server  Start the llama-server (sandboxed)
+  llama-bench   Run llama-bench (sandboxed, no network)
   mlx-server    Start mlx_lm.server (sandboxed)
   pi            Start pi (pi-coding-agent) with the llama-cpp plugin (sandboxed)
   llm           Run llm CLI (sandboxed)
@@ -106,6 +107,14 @@ llama-server options:
                         UNIX domain socket when ADDR ends in .sock.
   --port PORT           TCP port to bind (default 8080).
   All other flags are passed through to llama-server.
+
+llama-bench options:
+  --model SPEC          Same spec grammar as llama-server (llama-bench's
+                        own -m and the -hf aliases also work). The spec
+                        resolves and downloads host-side; the bench then
+                        runs with no network at all.
+  All other flags are passed through to llama-bench (-p, -n, -b, -ub,
+  -ngl, -fa, -ctk, -ctv, ...).
 
 mlx-server options:
   --model SPEC          Local model directory or HF repo of an MLX model
@@ -134,7 +143,7 @@ Environment:
   SANDBOXED_AI_PROG  Program name shown in this help (set by the Nix wrapper)
   MODEL              Model spec (overridden by --model)
   MMPROJ             Projector spec (overridden by --mmproj)
-  LLAMA_SERVER, MLX_SERVER, MLX_VLM_SERVER, PI, LLM
+  LLAMA_SERVER, LLAMA_BENCH, MLX_SERVER, MLX_VLM_SERVER, PI, LLM
                      Explicit binary paths (fallback: PATH lookup)
   PI_LLAMA_DIR       Dir holding the pi llama-cpp plugin's index.ts
                      (set by the Nix wrapper; required for the pi command)

@@ -1,0 +1,13 @@
+; vim:ft=scheme
+(version 1)
+(deny default)
+
+;; llama-bench sandbox — the llama-server policy minus the serving
+;; surface: same GPU, weights and cache rules from server.sb, with
+;; net-none.sb as the network personality. Results go to stdout only.
+(import (param "COMMON_SB"))
+(import (param "SERVER_SB"))
+
+;; ── Process: the single pinned binary ────────────────────
+(allow process-exec
+  (literal (param "LLAMA_BENCH")))

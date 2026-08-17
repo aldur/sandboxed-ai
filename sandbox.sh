@@ -101,6 +101,7 @@ Usage: $PROG <command> [options]
 
 Commands:
   llama-server  Start the llama-server (sandboxed)
+  llama-bench   Run llama-bench (sandboxed, no network)
   mlx-server    Start mlx_lm.server (sandboxed)
   pi            Start pi (pi-coding-agent) with the llama-cpp plugin (sandboxed)
   llm           Run llm CLI (sandboxed)
@@ -122,6 +123,14 @@ llama-server options:
                         UNIX domain socket when ADDR ends in .sock.
   --port PORT           TCP port to bind (default 8080).
   All other flags are passed through to llama-server.
+
+llama-bench options:
+  --model SPEC          Same spec grammar as llama-server (llama-bench's
+                        own -m and the -hf aliases also work). The spec
+                        resolves and downloads host-side; the bench then
+                        runs with no network at all.
+  All other flags are passed through to llama-bench (-p, -n, -b, -ub,
+  -ngl, -fa, -ctk, -ctv, ...).
 
 mlx-server options:
   --model SPEC          Local model directory or HF repo of an MLX model
@@ -150,7 +159,7 @@ Environment:
   SANDBOXED_AI_PROG  Program name shown in this help (set by the Nix wrapper)
   MODEL              Model spec (overridden by --model)
   MMPROJ             Projector spec (overridden by --mmproj)
-  LLAMA_SERVER, MLX_SERVER, MLX_VLM_SERVER, PI, LLM
+  LLAMA_SERVER, LLAMA_BENCH, MLX_SERVER, MLX_VLM_SERVER, PI, LLM
                      Explicit binary paths (fallback: PATH lookup)
   PI_LLAMA_DIR       Dir holding the pi llama-cpp plugin's index.ts
                      (set by the Nix wrapper; required for the pi command)
@@ -648,6 +657,93 @@ cmd_llama() {
     "$llama_server" "${server_args[@]}" "${extra_args[@]}"
 }
 
+cmd_bench() {
+  # Consumes the model flags (llama-bench's own -m plus the -hf aliases),
+  # resolved host-side as in cmd_llama; everything else passes through.
+  local -a extra_args=()
+  local want_help=""
+  [[ $# -gt 0 ]] || want_help=1
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    -m | --model | -hf | -hfr | --hf-repo)
+      need_arg "$@"
+      MODEL="$2"
+      shift 2
+      ;;
+    -h | --help)
+      want_help=1
+      extra_args+=("$1")
+      shift
+      ;;
+    *)
+      extra_args+=("$1")
+      shift
+      ;;
+    esac
+  done
+  local help_only=""
+  if [[ -z "${MODEL:-}" ]]; then
+    [[ -n "$want_help" ]] || die "no model specified — use --model or set MODEL env var"
+    help_only=1
+  fi
+
+  local model_path="" model_dir=/dev/null llama_bench pkg_store
+  [[ -n "$help_only" ]] || {
+    model_path="$(resolve_model "$MODEL")"
+    model_dir="${model_path%/*}"
+  }
+  llama_bench="$(resolve_binary "${LLAMA_BENCH:-}" llama-bench LLAMA_BENCH)"
+  pkg_store="$(pkg_store_for "$llama_bench")"
+
+  # Own scratch and Metal cache, not llama-server's — see CACHE_DIR above
+  # on why the sandboxes must not share a writable path.
+  TMPDIR="$TMPDIR/llama-bench"
+  CACHE_DIR="$CACHE_DIR/llama-bench"
+  mkdir -p "$CACHE_DIR" "$TMPDIR"
+  export TMPDIR
+  # Root ~-relative lookups inside the writable cache, as in cmd_llama.
+  export HOME="$CACHE_DIR"
+  resolve_darwin_dirs
+  resolve_stdio
+
+  local -a bench_args=()
+  if [[ -n "$help_only" ]]; then
+    bench_args=(--help)
+    extra_args=()
+  else
+    bench_args=(-m "$model_path")
+    printf 'Starting sandboxed llama-bench:\n'
+    info "binary:" "$llama_bench"
+    info "model:" "$model_path"
+    info "extra:" "${extra_args[*]:-none}"
+    printf '\n'
+  fi
+
+  cd "$CACHE_DIR"
+
+  # No NET_TARGET: net-none.sb consumes none (see its header).
+  local -a sbx_env
+  sandbox_env sbx_env HOME TMPDIR
+  exec "${sbx_env[@]}" "$SANDBOX_EXEC" \
+    -D COMMON_SB="$PROFILES_DIR/common.sb" \
+    -D SERVER_SB="$PROFILES_DIR/server.sb" \
+    -D NET_SB="$PROFILES_DIR/net-none.sb" \
+    -D PKG_STORE="$pkg_store" \
+    -D HOME_DIR="$HOME_DIR" \
+    -D HOME_PARENT="$HOME_PARENT" \
+    -D STDOUT_PATH="$STDOUT_PATH" \
+    -D STDERR_PATH="$STDERR_PATH" \
+    -D DARWIN_USER_TEMP_DIR="$DARWIN_USER_TEMP_DIR" \
+    -D DARWIN_METAL_CACHE="$DARWIN_METAL_CACHE" \
+    -D DARWIN_METALFE_CACHE="$DARWIN_METALFE_CACHE" \
+    -D LLAMA_BENCH="$llama_bench" \
+    -D MODEL_DIR="$model_dir" \
+    -D CACHE_DIR="$CACHE_DIR" \
+    -D TMPDIR="$TMPDIR" \
+    -f "$PROFILES_DIR/llama-bench.sb" \
+    "$llama_bench" "${bench_args[@]}" "${extra_args[@]}"
+}
+
 cmd_mlx() {
   # Consumes --model/--host; everything else passes through.
   # MODEL is intentionally global: the flag overrides the env var.
@@ -961,6 +1057,7 @@ cmd="$1"
 shift
 case "$cmd" in
 llama-server) cmd_llama "$@" ;;
+llama-bench) cmd_bench "$@" ;;
 mlx-server) cmd_mlx "$@" ;;
 pi) cmd_pi "$@" ;;
 llm) cmd_llm "$@" ;;

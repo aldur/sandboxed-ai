@@ -3,8 +3,9 @@
 # seatbelt profile and exercised over the wire, plus negative probes
 # asserting the sandbox denies what it must deny.
 #
-# Needs an Apple-silicon Mac (seatbelt + Metal) with the project toolchain
-# on PATH (the devshell provides it: `nix develop --command tests/e2e.sh`).
+# Needs an Apple-silicon Mac (seatbelt + Metal) and nix; run it as
+# `nix develop .#e2e --command tests/e2e.sh` (that shell carries the
+# suite's own tools — the model toolchain resolves from the flake below).
 # Small test models are downloaded from Hugging Face on first run and cached
 # in the regular models directory; override with:
 #   TEST_GGUF_MODEL (default bartowski/SmolLM2-135M-Instruct-GGUF:Q4_K_M)

@@ -200,29 +200,17 @@
         default = sandboxed-ai;
       };
 
+      # Only the sandboxed entry point, on purpose: the wrapper pins its
+      # tool binaries via its own PATH prefix, so neither shell needs to
+      # name — or put on PATH — any binary that would run outside a
+      # sandbox. The e2e shell adds what tests/e2e.sh itself runs (the
+      # suite resolves the model toolchain from the flake, not from PATH).
       devShells.${system} = {
-        default = pkgs.mkShell {
+        default = pkgs.mkShell { packages = [ sandboxed-ai ]; };
+        e2e = pkgs.mkShell {
           packages = [
             sandboxed-ai
             pkgs.python3
-          ];
-
-          LLAMA_SERVER = "${llama-cpp}/bin/llama-server";
-          MLX_SERVER = "${mlx-lm}/bin/mlx_lm.server";
-          MLX_VLM_SERVER = "${mlx-vlm}/bin/mlx_vlm.server";
-          LLM = "${llm}/bin/llm";
-          PI = "${pkgs.pi-coding-agent}/bin/pi";
-          PI_LLAMA_DIR = "${pi-llama}";
-        };
-
-        # The tools themselves, unsandboxed, for when needed.
-        tools = pkgs.mkShell {
-          packages = [
-            llama-cpp
-            llm
-            mlx-lm
-            mlx-vlm
-            pkgs.pi-coding-agent
           ];
         };
       };
