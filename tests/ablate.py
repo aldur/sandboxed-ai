@@ -317,7 +317,7 @@ def t_llama_sock(sandbox):
         pass
     log = open(os.path.join(RUN, "server.log"), "w")
     p = subprocess.Popen(
-        [sandbox, "llama-server", "--model", GGUF, "--socket", sock],
+        [sandbox, "llama-server", "--model", GGUF, "--host", sock],
         stdout=log,
         stderr=subprocess.STDOUT,
         start_new_session=True,
