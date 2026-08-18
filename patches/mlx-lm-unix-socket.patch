@@ -1,6 +1,6 @@
 --- a/mlx_lm/server.py	2026-08-03 12:19:44.021491003 +0000
 +++ b/mlx_lm/server.py	2026-08-03 20:46:39.467156210 +0000
-@@ -1706,11 +1706,31 @@
+@@ -1706,11 +1706,42 @@
      server_class=ThreadingHTTPServer,
      handler_class=APIHandler,
  ):
@@ -18,7 +18,18 @@
 +            address_family = socket.AF_UNIX
 +
 +            def server_bind(self):
-+                self.socket.bind(self.server_address)
++                # Owner-only, like the mlx-vlm patch: on macOS connecting
++                # to a UNIX socket needs write permission on it, and this
++                # server authenticates nobody — so the mode must not
++                # depend on the launcher's umask.
++                import os as _os
++
++                prev_umask = _os.umask(0o177)
++                try:
++                    self.socket.bind(self.server_address)
++                finally:
++                    _os.umask(prev_umask)
++                _os.chmod(self.server_address, 0o600)
 +                self.server_name = "localhost"
 +                self.server_port = 0
 +
@@ -37,7 +48,7 @@
      httpd = server_class(
          server_address,
          lambda *args, **kwargs: handler_class(
-@@ -1724,7 +1744,10 @@
+@@ -1724,7 +1755,10 @@
          "mlx_lm.server is not recommended for production as "
          "it only implements basic security checks."
      )
