@@ -205,11 +205,13 @@ mlx-server options:
 
 pi options:
   -w, --workspace DIR   Workspace directory (default: current directory)
+  --port PORT           Port of the running server (default 8080)
   Additional args are passed through to pi.
 
 llm options:
-  All args are passed through to llm (use its -m to pick a model; the
-  default model is preset to "llama-server").
+  --port PORT           Port of the running server (default 8080)
+  All other args are passed through to llm (use its -m to pick a model;
+  the default model is preset to the running server's).
 
 Environment:
   XDG_STATE_HOME     Parent of the per-user dir holding models, caches and
@@ -485,8 +487,11 @@ paths_overlap() {
   [[ "$a" == "$b"* || "$b" == "$a"* ]]
 }
 
-# Consume leading -w/--workspace DIR (last wins); sets WORKSPACE and ARGS
-# (the remaining args, passed through to the wrapped tool).
+# Consume leading -w/--workspace DIR and --port PORT (last wins); sets
+# WORKSPACE, PORT and ARGS (the remaining args, passed through to the
+# wrapped tool). --port retargets both the sandbox's network grant and
+# LLAMA_BASE_URL at a server started on a non-default port — hardcoding
+# 8080 would let the grant and the configured endpoint silently diverge.
 #
 # The workspace is the one path this script takes from the caller, and the
 # agent gets read+write over all of it — so it is canonicalized like every
@@ -502,10 +507,21 @@ paths_overlap() {
 #                  for a relocated state or models dir
 parse_workspace() {
   WORKSPACE="$PWD"
-  while [[ "${1:-}" == "-w" || "${1:-}" == "--workspace" ]]; do
-    need_arg "$@"
-    WORKSPACE="$2"
-    shift 2
+  while :; do
+    case "${1:-}" in
+    -w | --workspace)
+      need_arg "$@"
+      WORKSPACE="$2"
+      shift 2
+      ;;
+    --port)
+      need_arg "$@"
+      [[ "$2" =~ ^[0-9]+$ ]] || die "not a port number: $2"
+      PORT="$2"
+      shift 2
+      ;;
+    *) break ;;
+    esac
   done
   ARGS=("$@")
 
@@ -1072,6 +1088,15 @@ cmd_pi() {
 }
 
 cmd_llm() {
+  # Leading --port, as in parse_workspace: the network grant below must
+  # name the port the server actually serves.
+  while [[ "${1:-}" == "--port" ]]; do
+    need_arg "$@"
+    [[ "$2" =~ ^[0-9]+$ ]] || die "not a port number: $2"
+    PORT="$2"
+    shift 2
+  done
+
   export LLM_USER_PATH="$STATE_DIR/llm"
   export OPENAI_API_KEY="${OPENAI_API_KEY:-dummy}"
   # Root ~-relative lookups inside llm's own state dir: the real HOME is
@@ -1081,9 +1106,19 @@ cmd_llm() {
   mkdir -p "$LLM_USER_PATH" "$TMPDIR"
   export TMPDIR
 
-  # Preset the default model to the llm-llama-server plugin's model name;
-  # llm itself handles -m to pick another.
-  printf 'llama-server\n' >"$LLM_USER_PATH/default_model.txt"
+  # Preset the default model; llm itself handles -m to pick another. The
+  # llm-llama-server plugin hardcodes port 8080, so a non-default --port
+  # is served through an extra-openai-models.yaml entry instead, under an
+  # id that cannot collide with the plugin's. The yaml is removed on the
+  # default port so a stale entry never lingers.
+  if [[ "$PORT" == 8080 ]]; then
+    rm -f "$LLM_USER_PATH/extra-openai-models.yaml"
+    printf 'llama-server\n' >"$LLM_USER_PATH/default_model.txt"
+  else
+    printf -- '- model_id: llama-server-%s\n  model_name: llama-server\n  api_base: http://localhost:%s/v1\n' \
+      "$PORT" "$PORT" >"$LLM_USER_PATH/extra-openai-models.yaml"
+    printf 'llama-server-%s\n' "$PORT" >"$LLM_USER_PATH/default_model.txt"
+  fi
 
   local llm_bin pkg_store
   llm_bin="$(resolve_binary "${LLM:-}" llm LLM)"

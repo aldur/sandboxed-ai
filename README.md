@@ -128,11 +128,13 @@ mlx-server options:
 
 pi options:
   -w, --workspace DIR   Workspace directory (default: current directory)
+  --port PORT           Port of the running server (default 8080)
   Additional args are passed through to pi.
 
 llm options:
-  All args are passed through to llm (use its -m to pick a model; the
-  default model is preset to "llama-server").
+  --port PORT           Port of the running server (default 8080)
+  All other args are passed through to llm (use its -m to pick a model;
+  the default model is preset to the running server's).
 
 Environment:
   XDG_STATE_HOME     Parent of the per-user dir holding models, caches and
