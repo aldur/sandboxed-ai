@@ -145,7 +145,12 @@
           };
           # Serve on a UNIX domain socket when --host ends in .sock,
           # mirroring llama-server's convention (see sandbox.sh --host).
-          patches = [ ./patches/mtplx-unix-socket.patch ];
+          # The props patch adds a llama.cpp-compatible /props endpoint.
+          # The pi llama-cpp plugin requires it for model discovery.
+          patches = [
+            ./patches/mtplx-unix-socket.patch
+            ./patches/mtplx-props.patch
+          ];
           build-system = with mlxPython.pkgs; [
             setuptools
             wheel

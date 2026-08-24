@@ -1,0 +1,30 @@
+--- a/mtplx/server/openai.py
++++ b/mtplx/server/openai.py
+@@ -24937,6 +24937,27 @@
+                 "health": f"{server_url}/health",
+             },
+         }
++
++    @app.get("/props")
++    def props() -> dict[str, Any]:
++        # Minimal llama.cpp-compatible /props endpoint. The pi llama-cpp
++        # plugin reads the context window and the chat template from it.
++        # All fields are optional in the plugin schema. The query
++        # parameters (model, autoload) are accepted and ignored: this
++        # server loads one model at startup.
++        tokenizer = getattr(getattr(state, "runtime", None), "tokenizer", None)
++        template = getattr(tokenizer, "chat_template", None)
++        n_ctx = int(
++            getattr(state, "context_window", 0)
++            or getattr(state, "model_context_window_max", 0)
++            or 0
++        )
++        payload: dict[str, Any] = {}
++        if n_ctx > 0:
++            payload["default_generation_settings"] = {"n_ctx": n_ctx}
++        if isinstance(template, str) and template:
++            payload["chat_template"] = template
++        return payload
+ 
+     @app.get("/health")
+     def health() -> dict[str, Any]:
