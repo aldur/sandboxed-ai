@@ -115,6 +115,12 @@
           # Serve on a UNIX domain socket when --host ends in .sock,
           # mirroring llama-server's convention (see sandbox.sh --host).
           patches = (old.patches or [ ]) ++ [ ./patches/mlx-vlm-unix-socket.patch ];
+          # mlx 0.32 rejects the zero-size AvgPool2d kernel this test's
+          # Gemma3 config computes; mlx-vlm 0.4.4 predates that mlx.
+          # One known-incompatible test — the rest of the suite still runs.
+          disabledTests = (old.disabledTests or [ ]) ++ [
+            "test_gemma3_input_embeddings"
+          ];
         })
       );
 
