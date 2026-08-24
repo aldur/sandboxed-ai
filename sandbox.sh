@@ -242,6 +242,10 @@ Environment:
                      Explicit binary paths (fallback: PATH lookup)
   PI_LLAMA_DIR       Dir holding the pi llama-cpp plugin's index.ts
                      (set by the Nix wrapper; required for the pi command)
+  MTPLX_SESSION_BANK_MAX_BYTES, MTPLX_SESSION_BANK_PER_SESSION_BYTES,
+  MTPLX_SESSION_BANK_MAX_ENTRIES
+                     mtplx session-cache budget overrides (e.g. 16G),
+                     passed through into the sandbox
   NIX_SSL_CERT_FILE  CA bundle granted read-only to the mlx sandbox
   LLAMA_API_KEY, OPENAI_API_KEY
                      Client API keys; local servers accept the "dummy" default
@@ -1198,8 +1202,12 @@ cmd_mtplx() {
 
   cd "$CACHE_DIR"
 
+  # The MTPLX_SESSION_BANK_* overrides pass through on purpose: they
+  # carry byte sizes, not credentials, and the session-bank budget is a
+  # knob users legitimately turn (the server prints the override names).
   local -a sbx_env
-  sandbox_env sbx_env HOME TMPDIR HF_HOME HF_HUB_OFFLINE PYTHONNOUSERSITE NIX_SSL_CERT_FILE
+  sandbox_env sbx_env HOME TMPDIR HF_HOME HF_HUB_OFFLINE PYTHONNOUSERSITE NIX_SSL_CERT_FILE \
+    MTPLX_SESSION_BANK_MAX_BYTES MTPLX_SESSION_BANK_PER_SESSION_BYTES MTPLX_SESSION_BANK_MAX_ENTRIES
   exec "${sbx_env[@]}" "$SANDBOX_EXEC" \
     -D COMMON_SB="$PROFILES_DIR/common.sb" \
     -D SERVER_SB="$PROFILES_DIR/server.sb" \

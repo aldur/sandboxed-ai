@@ -29,6 +29,15 @@
   (literal (param "MLX_WRAPPED"))
   (literal (param "MLX_WRAPPED_INTERP")))
 
+;; Session-bank auto sizing runs `/usr/sbin/sysctl -n hw.memsize` as a
+;; subprocess (mtplx reads total RAM nowhere else). Without this the
+;; probe dies, and the bank falls back to the flat legacy budget with
+;; its small per-session cap — which evicts long-context sessions on
+;; big-RAM machines. The binary is SIP-protected, and common.sb already
+;; allows the hw.* sysctl values it reads.
+(allow process-exec
+  (literal "/usr/sbin/sysctl"))
+
 ;; The wrapper stops its child on shutdown (proc.terminate → SIGTERM).
 (allow signal (target children))
 
