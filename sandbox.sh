@@ -1125,6 +1125,15 @@ cmd_mtplx() {
   # Tuning binds nothing: swap in the no-network personality. NET_TARGET
   # stays passed below; net-none.sb consumes no parameters.
   [[ "$mode" == serve ]] || NET_SB="$PROFILES_DIR/net-none.sb"
+  # The serve wrapper connects to its own listen address: it checks the
+  # port before it starts the server child, and the max-fan watchdog
+  # polls /health. server.sb kills outbound connects, so a TCP serve
+  # imports the self-dial grant (net-self-tcp.sb). Socket mode and tune
+  # make no connect and get net-none.sb. NET_SELF is always passed;
+  # only net-self-tcp.sb consumes it.
+  local net_self_sb="$PROFILES_DIR/net-none.sb"
+  [[ "$mode" == serve && -z "$socket" ]] &&
+    net_self_sb="$PROFILES_DIR/net-self-tcp.sb"
 
   # An MTPLX model is an MLX repo with the MTP weights baked in, so the
   # full-repo resolver applies unchanged.
@@ -1196,6 +1205,8 @@ cmd_mtplx() {
     -D SERVER_SB="$PROFILES_DIR/server.sb" \
     -D NET_SB="$NET_SB" \
     -D NET_TARGET="$NET_TARGET" \
+    -D NET_SELF_SB="$net_self_sb" \
+    -D NET_SELF="localhost:$PORT" \
     -D PKG_STORE="$pkg_store" \
     -D HOME_DIR="$HOME_DIR" \
     -D HOME_PARENT="$HOME_PARENT" \

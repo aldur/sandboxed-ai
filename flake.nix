@@ -166,7 +166,12 @@
             # tool calls). Without it those requests fail at runtime.
             llguidance
             mlx
-            mlx-lm
+            # A bare `mlx-lm` resolves to the outer `let` binding, which
+            # is the CLI application: `let` wins over `with` in Nix. The
+            # application has no `pythonModule` attribute, so
+            # makePythonPath below would drop it. Name the python module
+            # explicitly.
+            mlxPython.pkgs.mlx-lm
             nanobind
             numpy
             pillow
@@ -175,6 +180,15 @@
             safetensors
             transformers
             uvicorn
+          ];
+          # `mtplx serve` starts `sys.executable -m mtplx.server.openai`
+          # as a child process. Nix adds the site directories to the
+          # entry script only, not to the interpreter. The child process
+          # thus fails with ModuleNotFoundError. Export the same
+          # directories as PYTHONPATH so the child process finds them.
+          makeWrapperArgs = [
+            "--prefix PYTHONPATH : ${placeholder "out"}/${mlxPython.sitePackages}"
+            "--prefix PYTHONPATH : ${mlxPython.pkgs.makePythonPath propagatedBuildInputs}"
           ];
           # Upstream's tests need Metal, which the nix build sandbox does
           # not have (the same reason nixpkgs builds mlx GPU-less), so no

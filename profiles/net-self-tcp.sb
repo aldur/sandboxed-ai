@@ -1,0 +1,11 @@
+; vim:ft=scheme
+;; Loopback self-dial. mtplx.sb imports this file as NET_SELF_SB in TCP
+;; serve mode. The serve wrapper connects to its own listen address: it
+;; checks the port before it starts the server child, and the max-fan
+;; watchdog polls /health. server.sb kills outbound connects with
+;; SIGKILL, so this grant is necessary. NET_SELF is "localhost:PORT" —
+;; the same address the serving personality permits to bind, and no
+;; other outbound target. Socket mode and tune import net-none.sb here
+;; instead: they make no connect (name resolution of a .sock path fails
+;; first).
+(allow network-outbound (remote tcp (param "NET_SELF")))

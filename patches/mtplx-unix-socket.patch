@@ -30,20 +30,37 @@
  
  
  def validate_server_security_args(args: argparse.Namespace) -> None:
-@@ -32354,6 +32359,21 @@
+@@ -32354,6 +32359,38 @@
      # uvicorn wait forever on Ctrl-C. The deadline lets in-flight requests
      # finish, then cancels lingering streams and exits normally — atexit
      # cleanup (thermal restore) still runs, unlike a hard os._exit.
 +    if str(args.host or "").endswith(".sock"):
-+        # Serve on a UNIX domain socket, mirroring llama-server's
-+        # `--host *.sock` convention (the mlx-lm/mlx-vlm patches do the
-+        # same). Owner-only regardless of the launcher's umask: on macOS
-+        # connecting to a UNIX socket needs write permission on it, and
-+        # this server authenticates nobody on local binds.
-+        os.umask(0o177)
++        # Serve on a UNIX domain socket when --host ends in .sock. This
++        # is the same convention as llama-server and the mlx patches.
++        #
++        # Bind the socket here. Do not pass `uds=` to uvicorn: uvicorn
++        # sets the mode of that path to 0666. On macOS a connect to a
++        # UNIX socket needs write permission, and this server does not
++        # authenticate local clients. Bind under a 0177 umask and chmod
++        # to 0600 to keep the socket owner-only. uvicorn's `fd=` takes
++        # precedence over host/port. `_uds` stays referenced so the fd
++        # stays open.
++        import socket as _socket
++
++        try:
++            os.unlink(args.host)
++        except FileNotFoundError:
++            pass
++        _uds = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
++        _prev_umask = os.umask(0o177)
++        try:
++            _uds.bind(str(args.host))
++        finally:
++            os.umask(_prev_umask)
++        os.chmod(str(args.host), 0o600)
 +        uvicorn.run(
 +            app,
-+            uds=str(args.host),
++            fd=_uds.fileno(),
 +            log_level="warning",
 +            access_log=False,
 +            timeout_graceful_shutdown=5,

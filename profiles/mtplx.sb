@@ -45,3 +45,9 @@
 ;; As in mlx-server.sb: lookups the hosts file doesn't answer fail with
 ;; EPERM instead of SERVER_SB's SIGKILL. Must stay after that import.
 (deny network-outbound (literal "/private/var/run/mDNSResponder"))
+
+;; The wrapper connects to its own listen address (see
+;; net-self-tcp.sb). Keep this import after SERVER_SB's fatal outbound
+;; deny: the last matching rule wins. Socket mode and tune pass
+;; net-none.sb here.
+(import (param "NET_SELF_SB"))
