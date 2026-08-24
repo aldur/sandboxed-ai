@@ -1,0 +1,47 @@
+; vim:ft=scheme
+(version 1)
+(deny default)
+
+;; mtplx sandbox — Python + MLX (Metal), like mlx-server.sb, plus one
+;; process shape it needs: `mtplx serve` is a wrapper that Popens the
+;; real server (`python -m mtplx.server.openai`), so fork is allowed
+;; here. The child inherits this sandbox and execs the same granted
+;; interpreter, so the file and network scoping below bounds both
+;; processes; the boundary is that scoping, not the exec allowlist.
+(import (param "COMMON_SB"))
+(import (param "SERVER_SB"))
+
+;; ── Process ──────────────────────────────────────────────
+;; After SERVER_SB, whose (deny process-fork) this overrides: the last
+;; matching rule wins.
+(allow process-fork)
+
+;; The wrapper and its server child run the same files: the entry
+;; point, its shebang interpreter, the nix wrapper indirection (see
+;; resolve_mlx_exec in sandbox.sh), and sys.executable for the `-m`
+;; re-exec — which is the shebang interpreter again. Unused links are
+;; passed as /dev/null, which cannot be exec'd. The optional fan-control
+;; sidecar wants a `thermalforge` binary that is granted nowhere; mtplx
+;; detects the absence and skips it (no fan pinning, nothing fatal).
+(allow process-exec
+  (literal (param "MLX_SERVER"))
+  (literal (param "MLX_INTERP"))
+  (literal (param "MLX_WRAPPED"))
+  (literal (param "MLX_WRAPPED_INTERP")))
+
+;; The wrapper stops its child on shutdown (proc.terminate → SIGTERM).
+(allow signal (target children))
+
+;; ── Filesystem ───────────────────────────────────────────
+;; Same two grants as mlx-server.sb, same reasons: getfqdn() at bind
+;; resolves through the hosts file, and certifi/huggingface_hub open the
+;; CA bundle even offline.
+(allow file-read*
+  (literal "/private/etc/hosts"))
+(allow file-read*
+  (literal (param "CA_FILE")))
+
+;; ── Network ──────────────────────────────────────────────
+;; As in mlx-server.sb: lookups the hosts file doesn't answer fail with
+;; EPERM instead of SERVER_SB's SIGKILL. Must stay after that import.
+(deny network-outbound (literal "/private/var/run/mDNSResponder"))

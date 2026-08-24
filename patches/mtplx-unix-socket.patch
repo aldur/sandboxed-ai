@@ -1,0 +1,54 @@
+--- a/mtplx/commands/public.py
++++ b/mtplx/commands/public.py
+@@ -369,7 +369,12 @@
+ 
+ 
+ def _is_localhost_bind(host: str | None) -> bool:
+-    return str(host or "").strip().lower().strip("[]") in LOCALHOST_BINDS
++    # A UNIX domain socket (llama-server's `--host *.sock` convention) is
++    # filesystem-scoped: local by construction, so no API key is forced.
++    text = str(host or "").strip()
++    if text.endswith(".sock"):
++        return True
++    return text.lower().strip("[]") in LOCALHOST_BINDS
+ 
+ 
+ def _benchmark_seed(args: Any, *, runtime_profile: str, harness: str) -> int:
+--- a/mtplx/server/openai.py
++++ b/mtplx/server/openai.py
+@@ -3470,7 +3470,12 @@
+ 
+ 
+ def _is_localhost_bind(host: str | None) -> bool:
+-    return str(host or "").strip().lower().strip("[]") in LOCALHOST_BINDS
++    # A UNIX domain socket (llama-server's `--host *.sock` convention) is
++    # filesystem-scoped: local by construction, so no API key is forced.
++    text = str(host or "").strip()
++    if text.endswith(".sock"):
++        return True
++    return text.lower().strip("[]") in LOCALHOST_BINDS
+ 
+ 
+ def validate_server_security_args(args: argparse.Namespace) -> None:
+@@ -32354,6 +32359,21 @@
+     # uvicorn wait forever on Ctrl-C. The deadline lets in-flight requests
+     # finish, then cancels lingering streams and exits normally — atexit
+     # cleanup (thermal restore) still runs, unlike a hard os._exit.
++    if str(args.host or "").endswith(".sock"):
++        # Serve on a UNIX domain socket, mirroring llama-server's
++        # `--host *.sock` convention (the mlx-lm/mlx-vlm patches do the
++        # same). Owner-only regardless of the launcher's umask: on macOS
++        # connecting to a UNIX socket needs write permission on it, and
++        # this server authenticates nobody on local binds.
++        os.umask(0o177)
++        uvicorn.run(
++            app,
++            uds=str(args.host),
++            log_level="warning",
++            access_log=False,
++            timeout_graceful_shutdown=5,
++        )
++        return
+     uvicorn.run(
+         app,
+         host=args.host,

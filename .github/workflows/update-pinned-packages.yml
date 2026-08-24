@@ -26,6 +26,13 @@ jobs:
           - package: llama-cpp
             nix-update-args: --version=stable --version-regex 'b(.*)'
             verify: nix build .#llama-cpp -L
+          # mtplx is pinned to a PyPI release (pure-python wheel);
+          # nix-update resolves the latest version and hash from PyPI.
+          # The build's pythonImportsCheck is the verification that the
+          # new wheel still imports against the flake's dependency set.
+          - package: mtplx
+            nix-update-args: --version=stable
+            verify: nix build .#mtplx -L
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -81,7 +88,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [llama-cpp]
+        package: [llama-cpp, mtplx]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:

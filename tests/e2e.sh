@@ -10,6 +10,8 @@
 # in the regular models directory; override with:
 #   TEST_GGUF_MODEL (default bartowski/SmolLM2-135M-Instruct-GGUF:Q4_K_M)
 #   TEST_MLX_MODEL  (default mlx-community/SmolLM-135M-Instruct-4bit)
+#   TEST_MTPLX_MODEL (no default: the MTPLX catalog has no tiny model, so
+#                     the mtplx test is opt-in and skips when unset)
 #
 # Generation asserts on transport (HTTP 200, a completion comes back), not
 # on model output: the 135M test models are too small to follow
@@ -115,9 +117,10 @@ echo "# resolving the toolchain from the flake (this builds on first run)…"
 LLAMA_SERVER="$(flake_bin llama-cpp llama-server LLAMA_SERVER)"
 MLX_SERVER="$(flake_bin mlx-lm mlx_lm.server MLX_SERVER)"
 MLX_VLM_SERVER="$(flake_bin mlx-vlm mlx_vlm.server MLX_VLM_SERVER)"
+MTPLX="$(flake_bin mtplx mtplx MTPLX)"
 LLM="$(flake_bin llm llm LLM)"
 PI="$(flake_bin pi pi PI)"
-export LLAMA_SERVER MLX_SERVER MLX_VLM_SERVER LLM PI
+export LLAMA_SERVER MLX_SERVER MLX_VLM_SERVER MTPLX LLM PI
 if [[ -z "${PI_LLAMA_DIR:-}" ]] && command -v nix >/dev/null; then
   PI_LLAMA_DIR="$(nix build --no-link --print-out-paths "$ROOT#pi-llama" 2>/dev/null)" || PI_LLAMA_DIR=""
   export PI_LLAMA_DIR
@@ -632,6 +635,50 @@ if [[ -n "$MLX_SERVER" ]] && mlx_patched; then
   stop_server
 else
   fail "mlx-server (unix socket): the resolved mlx-lm lacks the flake's unix-socket patch ($MLX_SERVER)"
+fi
+
+# ── mtplx: TCP ────────────────────────────────────────────
+# The binary resolves from the flake like the rest of the toolchain. The
+# test model stays opt-in: the MTPLX catalog's smallest entries are
+# multi-GB downloads.
+if [[ -n "$MTPLX" && -n "${TEST_MTPLX_MODEL:-}" ]]; then
+  start_server mtplx-tcp mtplx --model "$TEST_MTPLX_MODEL"
+  if wait_http "http://127.0.0.1:$PORT/health" 300; then
+    ok "mtplx (tcp) becomes healthy"
+    if chat_ok "http://127.0.0.1:$PORT/v1/chat/completions" "$WORK/mtplx-tcp-chat.json"; then
+      ok "mtplx (tcp) serves a completion"
+    else
+      fail "mtplx (tcp) serves a completion" "$WORK/mtplx-tcp-chat.json"
+    fi
+  else
+    fail "mtplx (tcp) becomes healthy" "$WORK/mtplx-tcp.log"
+  fi
+  stop_server
+
+  # UNIX socket, through the flake's mtplx-unix-socket.patch. A resolved
+  # build without the patch reads the .sock host as a non-localhost bind
+  # and exits demanding an API key — a loud failure, as it should be.
+  MTPLX_SOCK="$SCRATCH/mtplx.sock"
+  start_server mtplx-sock mtplx --model "$TEST_MTPLX_MODEL" --host "$MTPLX_SOCK"
+  if wait_http "--unix-socket $MTPLX_SOCK http://localhost/health" 300; then
+    ok "mtplx (unix socket) becomes healthy"
+    if chat_ok "--unix-socket $MTPLX_SOCK http://localhost/v1/chat/completions" "$WORK/mtplx-sock-chat.json"; then
+      ok "mtplx (unix socket) serves a completion"
+    else
+      fail "mtplx (unix socket) serves a completion" "$WORK/mtplx-sock-chat.json"
+    fi
+    sock_mode="$(ls -ld "$MTPLX_SOCK" | awk '{print $1}')"
+    if [[ "$sock_mode" == ?rwx------ || "$sock_mode" == ?rw------- ]]; then
+      ok "mtplx (unix socket) is owner-only ($sock_mode)"
+    else
+      fail "mtplx (unix socket) is owner-only (got $sock_mode)"
+    fi
+  else
+    fail "mtplx (unix socket) becomes healthy" "$WORK/mtplx-sock.log"
+  fi
+  stop_server
+else
+  skip "mtplx (tcp + unix socket)" "install mtplx and set TEST_MTPLX_MODEL to test"
 fi
 
 # ── `set -e` does not swallow the run ─────────────────────

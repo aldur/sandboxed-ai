@@ -118,6 +118,66 @@
         })
       );
 
+      # MTPLX (github.com/youssofal/MTPLX): MLX server that decodes with
+      # the model's own MTP heads. Pure-python PyPI release, built in the
+      # Metal-enabled python set so it shares the same mlx (and the
+      # unix-socket-patched mlx-lm) as the mlx servers. Built from the
+      # sdist, not the wheel: nix-update (see update-pinned-packages.yml)
+      # resolves new versions from fetchPypi's mirror://pypi URL, which
+      # only the sdist form produces.
+      # Exported under packages for nix-update and the e2e suite's
+      # flake_bin, like llama-cpp — never for a shell PATH: it reaches a
+      # user only through the sandboxed-ai wrapper (`sandboxed-ai mtplx`).
+      mtplx = mlxPython.pkgs.toPythonApplication (
+        mlxPython.pkgs.buildPythonPackage rec {
+          pname = "mtplx";
+          version = "2.9.1";
+          pyproject = true;
+          src = pkgs.fetchPypi {
+            inherit pname version;
+            hash = "sha256-czLIhkQmOZmfDAPYl8M0R/Er41AXUuOUB8/c3tGgQr4=";
+          };
+          # Serve on a UNIX domain socket when --host ends in .sock,
+          # mirroring llama-server's convention (see sandbox.sh --host).
+          patches = [ ./patches/mtplx-unix-socket.patch ];
+          build-system = with mlxPython.pkgs; [
+            setuptools
+            wheel
+          ];
+          # Upstream pins tight ranges on the Metal stack; the package set
+          # carries what the overlay's wheel provides. Relax those pins
+          # rather than skip the check, so a truly missing dependency
+          # still fails the build.
+          pythonRelaxDeps = [
+            "mlx"
+            "mlx-lm"
+            "transformers"
+          ];
+          propagatedBuildInputs = with mlxPython.pkgs; [
+            fastapi
+            huggingface-hub
+            # The 'server' extra: grammar-constrained output (JSON schema,
+            # tool calls). Without it those requests fail at runtime.
+            llguidance
+            mlx
+            mlx-lm
+            nanobind
+            numpy
+            pillow
+            pydantic
+            rich
+            safetensors
+            transformers
+            uvicorn
+          ];
+          # Upstream's tests need Metal, which the nix build sandbox does
+          # not have (the same reason nixpkgs builds mlx GPU-less), so no
+          # check phase; at least prove the package imports against this
+          # dependency set.
+          pythonImportsCheck = [ "mtplx" ];
+        }
+      );
+
       # `pi` bundled with the pinned huggingface/pi-llama llama.cpp plugin
       # (auto-loaded via `pi -e <store>/index.ts` — no `pi install`, no
       # network) and telemetry off. Packaged in aldur/dotfiles; through the
@@ -178,6 +238,7 @@
                 llm
                 mlx-lm
                 mlx-vlm
+                mtplx
                 pkgs.pi-coding-agent
               ]
             }
@@ -194,6 +255,7 @@
           llm
           mlx-lm
           mlx-vlm
+          mtplx
           pi
           pi-llama
           sandboxed-ai

@@ -4,6 +4,7 @@ This repository provides `sandbox-exec` profiles to run:
 
 1. [`llama-server`][1]
 1. [`mlx_lm.server`][5]
+1. [MTPLX][6]
 1. [`pi`][4]
 1. [`simonw/llm`][3]
 
@@ -61,6 +62,28 @@ brew install mlx-lm
 # Vision models are automatically detected and served with `mlx_vlm.server`.
 ```
 
+### MTPLX
+
+[MTPLX][6] serves MLX models, has built-in MTP support, and  speaks OpenAI and
+Anthropic API.
+
+```bash
+# Install mtplx or use `nix develop`
+brew install youssofal/mtplx/mtplx
+
+# Sandbox it and run it
+./sandbox.sh mtplx --model Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed
+
+# Optional: calibrate the draft depth for your machine
+./sandbox.sh mtplx tune --model Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed
+```
+
+The sandbox has the same posture of `mlx-lm`. The server runs offline and reads
+the weights read-only. It binds `127.0.0.1:8080` by default; `--host
+/path/llama.sock` serves on a UNIX domain socket instead. The sandbox denies
+the fan-control helper that `tune` normally spawns, so tuning runs with a bit
+more timing noise.
+
 ### `pi`
 
 ```bash
@@ -87,6 +110,8 @@ Commands:
   llama-server  Start the llama-server (sandboxed)
   llama-bench   Run llama-bench (sandboxed, no network)
   mlx-server    Start mlx_lm.server (sandboxed)
+  mtplx         Start the MTPLX server (sandboxed); `mtplx tune` runs its
+                draft-depth calibration (sandboxed, no network)
   pi            Start pi (pi-coding-agent) with the llama-cpp plugin (sandboxed)
   llm           Run llm CLI (sandboxed)
 
@@ -126,6 +151,19 @@ mlx-server options:
   --port PORT           TCP port to bind (default 8080).
   All other flags are passed through to the server.
 
+mtplx options:
+  tune                  Leading word: run `mtplx tune` instead of serving.
+                        Same sandbox, no network; the tuned draft depth
+                        lands in the cache and every later serve uses it.
+  --model SPEC          Local model directory or HF repo of an MTPLX-ready
+                        MLX model (e.g. Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed).
+                        The full repo downloads host-side; the server then
+                        runs with no network at all.
+  --host ADDR           TCP address to bind (default 127.0.0.1), or a
+                        UNIX domain socket when ADDR ends in .sock.
+  --port PORT           TCP port to bind (default 8080).
+  All other flags are passed through to `mtplx serve` (or `mtplx tune`).
+
 pi options:
   -w, --workspace DIR   Workspace directory (default: current directory)
   --port PORT           Port of the running server (default 8080)
@@ -145,7 +183,7 @@ Environment:
   SANDBOXED_AI_PROG  Program name shown in this help (set by the Nix wrapper)
   MODEL              Model spec (overridden by --model)
   MMPROJ             Projector spec (overridden by --mmproj)
-  LLAMA_SERVER, LLAMA_BENCH, MLX_SERVER, MLX_VLM_SERVER, PI, LLM, CURL
+  LLAMA_SERVER, LLAMA_BENCH, MLX_SERVER, MLX_VLM_SERVER, MTPLX, PI, LLM, CURL
                      Explicit binary paths (fallback: PATH lookup)
   PI_LLAMA_DIR       Dir holding the pi llama-cpp plugin's index.ts
                      (set by the Nix wrapper; required for the pi command)
@@ -159,3 +197,4 @@ Environment:
 [3]: https://github.com/simonw/llm
 [4]: https://pi.dev/
 [5]: https://github.com/ml-explore/mlx-lm
+[6]: https://github.com/youssofal/MTPLX

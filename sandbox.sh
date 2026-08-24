@@ -9,7 +9,8 @@
 # Subcommand → seatbelt profile (all import common.sb; the servers also
 # import net-tcp.sb or net-unix.sb, chosen by a .sock --host):
 #   llama-server → llama-server.sb    mlx-server → mlx-server.sb
-#   pi           → pi.sb              llm        → llm.sb
+#   mtplx        → mtplx.sb           llm        → llm.sb
+#   pi           → pi.sb
 #
 # sandbox-exec -D values are literal strings consumed by (param ...) in the
 # profiles — they parameterize path/address filters, never profile code.
@@ -164,6 +165,8 @@ Commands:
   llama-server  Start the llama-server (sandboxed)
   llama-bench   Run llama-bench (sandboxed, no network)
   mlx-server    Start mlx_lm.server (sandboxed)
+  mtplx         Start the MTPLX server (sandboxed); \`mtplx tune\` runs its
+                draft-depth calibration (sandboxed, no network)
   pi            Start pi (pi-coding-agent) with the llama-cpp plugin (sandboxed)
   llm           Run llm CLI (sandboxed)
 
@@ -203,6 +206,19 @@ mlx-server options:
   --port PORT           TCP port to bind (default 8080).
   All other flags are passed through to the server.
 
+mtplx options:
+  tune                  Leading word: run \`mtplx tune\` instead of serving.
+                        Same sandbox, no network; the tuned draft depth
+                        lands in the cache and every later serve uses it.
+  --model SPEC          Local model directory or HF repo of an MTPLX-ready
+                        MLX model (e.g. Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed).
+                        The full repo downloads host-side; the server then
+                        runs with no network at all.
+  --host ADDR           TCP address to bind (default 127.0.0.1), or a
+                        UNIX domain socket when ADDR ends in .sock.
+  --port PORT           TCP port to bind (default 8080).
+  All other flags are passed through to \`mtplx serve\` (or \`mtplx tune\`).
+
 pi options:
   -w, --workspace DIR   Workspace directory (default: current directory)
   --port PORT           Port of the running server (default 8080)
@@ -222,7 +238,7 @@ Environment:
   SANDBOXED_AI_PROG  Program name shown in this help (set by the Nix wrapper)
   MODEL              Model spec (overridden by --model)
   MMPROJ             Projector spec (overridden by --mmproj)
-  LLAMA_SERVER, LLAMA_BENCH, MLX_SERVER, MLX_VLM_SERVER, PI, LLM, CURL
+  LLAMA_SERVER, LLAMA_BENCH, MLX_SERVER, MLX_VLM_SERVER, MTPLX, PI, LLM, CURL
                      Explicit binary paths (fallback: PATH lookup)
   PI_LLAMA_DIR       Dir holding the pi llama-cpp plugin's index.ts
                      (set by the Nix wrapper; required for the pi command)
@@ -1018,6 +1034,188 @@ cmd_mlx() {
     "$mlx_server" "${server_args[@]}" "${extra_args[@]}"
 }
 
+# MTPLX (github.com/youssofal/MTPLX): MLX server that decodes with the
+# model's own MTP heads. Its profile is mlx-server.sb plus process-fork
+# (see mtplx.sb): `mtplx serve` is a wrapper that spawns the real server
+# as a python child. It differs from cmd_mlx in two more ways:
+#   - the entry point is `mtplx serve`, not a module script;
+#   - the model must be a complete MTPLX-ready repo (MTP weights
+#     included), served by local path after the host-side download.
+# UNIX sockets follow the shared convention (--host *.sock), through the
+# flake's mtplx-unix-socket.patch. An unpatched (brew) mtplx refuses a
+# .sock host loudly — it reads it as a non-localhost bind and demands an
+# API key — so socket mode needs the flake build.
+# Its ~/.mtplx state (config.toml, tuned draft depth) lands under the
+# re-rooted HOME inside the writable cache, so a sandboxed `tune` run
+# feeds every later sandboxed serve.
+cmd_mtplx() {
+  # A leading `tune` word selects `mtplx tune` (draft-depth calibration)
+  # under the same sandbox, minus the network: it talks to nothing, so it
+  # gets the no-network personality like llama-bench. Tuning normally
+  # pins the fans via a helper process; the sandbox denies that spawn, so
+  # timing is a bit noisier — but nothing runs outside the sandbox.
+  local mode=serve
+  if [[ "${1:-}" == tune ]]; then
+    mode=tune
+    shift
+  fi
+  # Consumes --model/--host/--port; everything else passes through.
+  # MODEL is intentionally global: the flag overrides the env var.
+  local -a extra_args=()
+  local socket="" want_help="" host_arg="" tcp_host="" port_arg=""
+  [[ $# -gt 0 || "$mode" == tune ]] || want_help=1
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --model)
+      need_arg "$@"
+      MODEL="$2"
+      shift 2
+      ;;
+    --host | --host=*)
+      # Same as in cmd_llama: .sock means a unix socket, otherwise TCP.
+      host_arg="${1#--host}"
+      host_arg="${host_arg#=}"
+      if [[ -n "$host_arg" ]]; then
+        shift
+      else
+        need_arg "$@"
+        host_arg="$2"
+        shift 2
+      fi
+      if [[ "$host_arg" == *.sock ]]; then
+        socket="$host_arg"
+      else
+        tcp_host="$host_arg"
+      fi
+      ;;
+    --port | --port=*)
+      # Consumed rather than passed through, as in cmd_llama.
+      port_arg="${1#--port}"
+      port_arg="${port_arg#=}"
+      if [[ -n "$port_arg" ]]; then
+        shift
+      else
+        need_arg "$@"
+        port_arg="$2"
+        shift 2
+      fi
+      [[ "$port_arg" =~ ^[0-9]+$ ]] || die "not a port number: $port_arg"
+      PORT="$port_arg"
+      ;;
+    -h | --help)
+      # Recorded, not consumed: with a model this passes through to
+      # `mtplx serve --help`; without one it selects help-only mode.
+      want_help=1
+      extra_args+=("$1")
+      shift
+      ;;
+    *)
+      extra_args+=("$1")
+      shift
+      ;;
+    esac
+  done
+  local help_only=""
+  if [[ -z "${MODEL:-}" ]]; then
+    [[ -n "$want_help" ]] || die "no model specified — use --model or set MODEL env var"
+    help_only=1
+  fi
+  # Before the download: a bad --host should not cost a full repo fetch.
+  select_net "$socket"
+  # Tuning binds nothing: swap in the no-network personality. NET_TARGET
+  # stays passed below; net-none.sb consumes no parameters.
+  [[ "$mode" == serve ]] || NET_SB="$PROFILES_DIR/net-none.sb"
+
+  # An MTPLX model is an MLX repo with the MTP weights baked in, so the
+  # full-repo resolver applies unchanged.
+  local model_dir=/dev/null
+  [[ -n "$help_only" ]] || model_dir="$(resolve_mlx_model "$MODEL")"
+
+  TMPDIR="$TMPDIR/mtplx"
+  CACHE_DIR="$CACHE_DIR/mtplx"
+  mkdir -p "$CACHE_DIR" "$TMPDIR"
+  export TMPDIR
+  # Root ~-relative state (~/.mtplx, HF hub probes) inside the writable
+  # cache, as in cmd_mlx.
+  export HOME="$CACHE_DIR/mtplx-home"
+  export HF_HOME="$HOME/huggingface"
+  mkdir -p "$HF_HOME/hub"
+  # The model is fully local and the sandbox denies outbound network
+  # anyway; keep huggingface_hub from even trying.
+  export HF_HUB_OFFLINE=1
+  # See cmd_mlx: the server holds GPU and model access, so refuse
+  # user-site imports outright.
+  export PYTHONNOUSERSITE=1
+
+  local mtplx_bin pkg_store
+  mtplx_bin="$(resolve_binary "${MTPLX:-}" mtplx MTPLX)"
+  pkg_store="$(pkg_store_for "$mtplx_bin")"
+  resolve_ca_file
+  resolve_darwin_dirs
+  resolve_stdio
+  # Same entry-point shapes as the mlx servers (script → interpreter,
+  # optionally through a wrapper), so the same walk applies.
+  resolve_mlx_exec "$mtplx_bin"
+
+  local -a server_args=()
+  if [[ -n "$help_only" ]]; then
+    server_args=("$mode" --help)
+    extra_args=()
+  else
+    printf 'Starting sandboxed mtplx %s:\n' "$mode"
+    info "binary:" "$mtplx_bin"
+    info "model:" "$model_dir"
+    if [[ "$mode" == serve ]]; then
+      if [[ -n "$socket" ]]; then
+        info "socket:" "$NET_TARGET"
+      else
+        info "port:" "$PORT"
+      fi
+    fi
+    info "extra:" "${extra_args[*]:-none}"
+    printf '\n'
+
+    # Run by local path: with HF_HUB_OFFLINE and no seeded cache, a
+    # repo id would make the server try (and fail) to resolve it.
+    # Extra args come last so they can override.
+    if [[ "$mode" == tune ]]; then
+      server_args=(tune --model "$model_dir")
+    elif [[ -n "$socket" ]]; then
+      server_args=(serve --model "$model_dir" --port "$PORT" --host "$NET_TARGET")
+    else
+      server_args=(serve --model "$model_dir" --port "$PORT" --host "${tcp_host:-127.0.0.1}")
+    fi
+  fi
+
+  cd "$CACHE_DIR"
+
+  local -a sbx_env
+  sandbox_env sbx_env HOME TMPDIR HF_HOME HF_HUB_OFFLINE PYTHONNOUSERSITE NIX_SSL_CERT_FILE
+  exec "${sbx_env[@]}" "$SANDBOX_EXEC" \
+    -D COMMON_SB="$PROFILES_DIR/common.sb" \
+    -D SERVER_SB="$PROFILES_DIR/server.sb" \
+    -D NET_SB="$NET_SB" \
+    -D NET_TARGET="$NET_TARGET" \
+    -D PKG_STORE="$pkg_store" \
+    -D HOME_DIR="$HOME_DIR" \
+    -D HOME_PARENT="$HOME_PARENT" \
+    -D STDOUT_PATH="$STDOUT_PATH" \
+    -D STDERR_PATH="$STDERR_PATH" \
+    -D DARWIN_USER_TEMP_DIR="$DARWIN_USER_TEMP_DIR" \
+    -D DARWIN_METAL_CACHE="$DARWIN_METAL_CACHE" \
+    -D DARWIN_METALFE_CACHE="$DARWIN_METALFE_CACHE" \
+    -D CA_FILE="$CA_FILE" \
+    -D MLX_SERVER="$mtplx_bin" \
+    -D MLX_INTERP="$MLX_INTERP" \
+    -D MLX_WRAPPED="$MLX_WRAPPED" \
+    -D MLX_WRAPPED_INTERP="$MLX_WRAPPED_INTERP" \
+    -D MODEL_DIR="$model_dir" \
+    -D CACHE_DIR="$CACHE_DIR" \
+    -D TMPDIR="$TMPDIR" \
+    -f "$PROFILES_DIR/mtplx.sb" \
+    "$mtplx_bin" "${server_args[@]}" "${extra_args[@]}"
+}
+
 cmd_pi() {
   parse_workspace "$@"
 
@@ -1155,6 +1353,7 @@ case "$cmd" in
 llama-server) cmd_llama "$@" ;;
 llama-bench) cmd_bench "$@" ;;
 mlx-server) cmd_mlx "$@" ;;
+mtplx) cmd_mtplx "$@" ;;
 pi) cmd_pi "$@" ;;
 llm) cmd_llm "$@" ;;
 -h | --help | help) usage ;;

@@ -4,6 +4,8 @@
 
 ;; mlx server sandbox — Python + MLX (Metal); the GPU/network surface
 ;; comes from server.sb, this file adds what CPython needs on top.
+;; mtplx.sb is this profile plus process-fork, for a server that spawns
+;; itself — keep the two in sync.
 (import (param "COMMON_SB"))
 (import (param "SERVER_SB"))
 
