@@ -637,23 +637,167 @@ else
   fail "mlx-server (unix socket): the resolved mlx-lm lacks the flake's unix-socket patch ($MLX_SERVER)"
 fi
 
+# ── mtplx: capability contract (small model, no opt-in) ───
+# mtplx degrades silently when the sandbox blocks an optional capability:
+# it prints a warning and falls back to a slower or dumber path. The
+# server still becomes healthy, so a health check alone proves little.
+# Assert each capability signal on its logs and endpoints instead. The
+# small MLX model is enough: these signals do not need MTP weights.
+if [[ -n "$MTPLX" ]]; then
+  start_server mtplx-cap mtplx --model "$TEST_MLX_MODEL"
+  if wait_http "http://127.0.0.1:$PORT/health" 300; then
+    ok "mtplx (capability run) becomes healthy"
+
+    # Session-bank auto sizing needs the sandboxed `sysctl -n hw.memsize`
+    # to work (exec grant + the "sysctl." meta tree in mtplx.sb).
+    if grep -q 'auto sizing unavailable' "$WORK/mtplx-cap.log"; then
+      fail "mtplx capability: session-bank auto sizing works in the sandbox" "$WORK/mtplx-cap.log"
+    else
+      ok "mtplx capability: session-bank auto sizing works in the sandbox"
+    fi
+
+    # The paged-attention ops are prebuilt by the flake and seeded by
+    # sandbox.sh (the sandbox denies the runtime JIT). A warning here
+    # means the seed or the map-exec grant broke.
+    if grep -qi 'vllm-metal.*unavailable' "$WORK/mtplx-cap.log"; then
+      fail "mtplx capability: prebuilt vllm-metal ops load in the sandbox" "$WORK/mtplx-cap.log"
+    else
+      ok "mtplx capability: prebuilt vllm-metal ops load in the sandbox"
+    fi
+
+    # /props is the contract the pi llama-cpp plugin discovers models
+    # through (the flake's mtplx-props.patch adds it).
+    if curl -s --max-time 5 "http://127.0.0.1:$PORT/props" | grep -q '"n_ctx"'; then
+      ok "mtplx capability: /props reports the context window"
+    else
+      fail "mtplx capability: /props reports the context window"
+    fi
+
+    if chat_ok "http://127.0.0.1:$PORT/v1/chat/completions" "$WORK/mtplx-cap-chat.json"; then
+      ok "mtplx (capability run) serves a completion"
+    else
+      fail "mtplx (capability run) serves a completion" "$WORK/mtplx-cap-chat.json"
+    fi
+  else
+    fail "mtplx (capability run) becomes healthy" "$WORK/mtplx-cap.log"
+  fi
+  stop_server
+else
+  skip "mtplx capability contract" "mtplx not available"
+fi
+
 # ── mtplx: TCP ────────────────────────────────────────────
 # The binary resolves from the flake like the rest of the toolchain. The
 # test model stays opt-in: the MTPLX catalog's smallest entries are
 # multi-GB downloads.
 if [[ -n "$MTPLX" && -n "${TEST_MTPLX_MODEL:-}" ]]; then
   start_server mtplx-tcp mtplx --model "$TEST_MTPLX_MODEL"
-  if wait_http "http://127.0.0.1:$PORT/health" 300; then
+  if wait_http "http://127.0.0.1:$PORT/health" 600; then
     ok "mtplx (tcp) becomes healthy"
+
+    # The point of an MTPLX model is native MTP speculative decoding. A
+    # server that silently fell back to autoregressive decoding also
+    # passes a health check, so assert the mode directly.
+    if curl -s --max-time 5 "http://127.0.0.1:$PORT/health" |
+      grep -q '"generation_mode": *"mtp"'; then
+      ok "mtplx (tcp) decodes in MTP mode, not the AR fallback"
+    else
+      fail "mtplx (tcp) decodes in MTP mode, not the AR fallback" "$WORK/mtplx-tcp.log"
+    fi
+    if grep -q 'mtp_off' "$WORK/mtplx-tcp.log"; then
+      fail "mtplx (tcp) log shows no mtp_off degradation" "$WORK/mtplx-tcp.log"
+    else
+      ok "mtplx (tcp) log shows no mtp_off degradation"
+    fi
+
     if chat_ok "http://127.0.0.1:$PORT/v1/chat/completions" "$WORK/mtplx-tcp-chat.json"; then
       ok "mtplx (tcp) serves a completion"
+      # The response embeds mtplx_stats. Accepted draft tokens prove the
+      # speculative decoder ran and its drafts survived verification —
+      # the one signal that cannot be true in an AR fallback.
+      if [[ -n "$PY" ]] && "$PY" -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+stats = d.get("mtplx_stats") or {}
+latest = stats.get("latest") or stats
+accepted = sum(latest.get("accepted_by_depth") or [])
+sys.exit(0 if accepted > 0 and int(latest.get("verify_calls") or 0) > 0 else 1)
+' "$WORK/mtplx-tcp-chat.json"; then
+        ok "mtplx (tcp) accepts speculative drafts (MTP machinery live)"
+      else
+        fail "mtplx (tcp) accepts speculative drafts (MTP machinery live)" "$WORK/mtplx-tcp-chat.json"
+      fi
     else
       fail "mtplx (tcp) serves a completion" "$WORK/mtplx-tcp-chat.json"
+    fi
+
+    # Long-context session machinery. The session bank, its snapshot
+    # store/restore, and the TurboQuant/paged helpers only run when a
+    # conversation grows into the multi-thousand-token range — a short
+    # probe never reaches them, and a regression there showed up in
+    # real use only deep into a session. Grow a session past the bank
+    # threshold, replay it with one more turn, and assert the banked
+    # KV was restored and MTP decoded on top of it.
+    if [[ -n "$PY" ]]; then
+      if "$PY" - "$PORT" "$WORK" <<'PYEOF'
+import json, sys, urllib.request
+port, work = sys.argv[1], sys.argv[2]
+url = f"http://127.0.0.1:{port}/v1/chat/completions"
+filler = "The quick brown fox jumps over the lazy dog. " * 800
+first = [{"role": "user", "content": filler + "\nSay READY."}]
+grown = first + [
+    {"role": "assistant", "content": "READY."},
+    {"role": "user", "content": "Now say OK."},
+]
+def chat(msgs, out):
+    req = urllib.request.Request(
+        url,
+        data=json.dumps({"messages": msgs, "max_tokens": 20}).encode(),
+        headers={"Content-Type": "application/json"})
+    # Generous timeout: the first request prefills thousands of tokens.
+    d = json.load(urllib.request.urlopen(req, timeout=900))
+    open(out, "w").write(json.dumps(d))
+    return d
+chat(first, f"{work}/mtplx-long-1.json")
+d = chat(grown, f"{work}/mtplx-long-2.json")
+s = d.get("mtplx_stats") or {}
+hit = bool(s.get("session_cache_hit"))
+accepted = sum(s.get("accepted_by_depth") or [])
+print(f"session_cache_hit={hit} restore_mode={s.get('session_restore_mode')} "
+      f"snapshot_bytes={s.get('sessionbank_snapshot_bytes')} accepted={accepted}")
+sys.exit(0 if hit and accepted > 0 else 1)
+PYEOF
+      then
+        ok "mtplx (tcp) banks and restores a long session (KV snapshot machinery)"
+      else
+        fail "mtplx (tcp) banks and restores a long session (KV snapshot machinery)" "$WORK/mtplx-long-2.json"
+      fi
+      # This grep was near-meaningless on the short probe: the external
+      # ops load lazily, so an unexercised path shows no warning. After
+      # the session-bank cycle above the lazy paths have run, and a
+      # fallback warning here is a real regression.
+      if grep -qi 'vllm-metal.*unavailable\|falling back to packaged' "$WORK/mtplx-tcp.log"; then
+        fail "mtplx (tcp) long-context run uses external ops, no fallback" "$WORK/mtplx-tcp.log"
+      else
+        ok "mtplx (tcp) long-context run uses external ops, no fallback"
+      fi
+    else
+      skip "mtplx long-context session machinery" "no python3 in $PKG_STORE"
     fi
   else
     fail "mtplx (tcp) becomes healthy" "$WORK/mtplx-tcp.log"
   fi
   stop_server
+
+  # `mtplx tune` calibrates the draft depth for the machine and stores
+  # it in the cache every later serve reads. It runs sandboxed with no
+  # network; a sandbox regression on its path (model load, generation,
+  # cache write) fails here.
+  if "$SANDBOX" mtplx tune --model "$TEST_MTPLX_MODEL" >"$WORK/mtplx-tune.log" 2>&1; then
+    ok "mtplx tune calibrates under the sandbox"
+  else
+    fail "mtplx tune calibrates under the sandbox" "$WORK/mtplx-tune.log"
+  fi
 
   # UNIX socket, through the flake's mtplx-unix-socket.patch. A resolved
   # build without the patch reads the .sock host as a non-localhost bind

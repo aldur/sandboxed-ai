@@ -38,10 +38,32 @@
 (allow process-exec
   (literal "/usr/sbin/sysctl"))
 
+;; The sysctl CLI does not read the value directly. It first resolves
+;; the OID and its format through the meta "sysctl." tree (name2oid,
+;; oidfmt). Allow that tree: it is introspection metadata only. Value
+;; reads stay filtered by the common.sb name allowlist.
+(allow sysctl-read
+  (sysctl-name-prefix "sysctl."))
+
+;; The dashboard hardware banner reads the CPU marketing name. The
+;; value is a model string ("Apple M3 Max") that every machine of the
+;; same model shares: it is not an identifier. Without this grant the
+;; probe fails softly and the banner shows no chip name.
+(allow sysctl-read
+  (sysctl-name "machdep.cpu.brand_string"))
+
 ;; The wrapper stops its child on shutdown (proc.terminate → SIGTERM).
 (allow signal (target children))
 
 ;; ── Filesystem ───────────────────────────────────────────
+;; The seeded paged-attention extension: sandbox.sh copies the
+;; store-built .so here, and dlopen needs map-exec. CACHE_DIR (which
+;; contains this directory) grants read/write only, so this is the one
+;; writable path the server can also map executable — the same
+;; trade-off server.sb makes for the Metal shader caches.
+(allow file-map-executable
+  (subpath (param "VLLM_METAL_CACHE")))
+
 ;; Same two grants as mlx-server.sb, same reasons: getfqdn() at bind
 ;; resolves through the hosts file, and certifi/huggingface_hub open the
 ;; CA bundle even offline.
@@ -54,6 +76,14 @@
 ;; As in mlx-server.sb: lookups the hosts file doesn't answer fail with
 ;; EPERM instead of SERVER_SB's SIGKILL. Must stay after that import.
 (deny network-outbound (literal "/private/var/run/mDNSResponder"))
+
+;; The fan-control code connects to the ThermalForge daemon socket when
+;; the socket file exists. A connect would hit SERVER_SB's fatal deny
+;; and kill the server mid-request. Deny it plainly instead: the
+;; connect fails with EPERM, mtplx catches the OSError, and fan control
+;; degrades to "unavailable" — the designed fallback. (/tmp resolves to
+;; /private/tmp; seatbelt matches resolved paths.)
+(deny network-outbound (literal "/private/tmp/thermalforge.sock"))
 
 ;; The wrapper connects to its own listen address (see
 ;; net-self-tcp.sb). Keep this import after SERVER_SB's fatal outbound

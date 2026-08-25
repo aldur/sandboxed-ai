@@ -88,6 +88,17 @@
                 mlx-lm = pyPrev.mlx-lm.overrideAttrs (old: {
                   patches = (old.patches or [ ]) ++ [ ./patches/mlx-lm-unix-socket.patch ];
                 });
+                # The dotfiles wheel package copies only lib/ out of the
+                # mlx_metal wheel. The C++ headers stay behind. mtplx
+                # compiles its paged-attention extension against them at
+                # build time (see the mtplx postInstall), so copy
+                # include/ as well.
+                mlx = pyPrev.mlx.overrideAttrs (old: {
+                  postInstall = (old.postInstall or "") + ''
+                    cp -r ${pyPrev.mlx.mlx_metal}/${pyFinal.python.sitePackages}/mlx/include \
+                      "$out/${pyFinal.python.sitePackages}/mlx/"
+                  '';
+                });
               })
             ];
           })
@@ -195,6 +206,20 @@
             "--prefix PYTHONPATH : ${placeholder "out"}/${mlxPython.sitePackages}"
             "--prefix PYTHONPATH : ${mlxPython.pkgs.makePythonPath propagatedBuildInputs}"
           ];
+          # Build the vendored vllm-metal paged-attention extension now,
+          # with mtplx's own build script. The runtime sandbox denies
+          # compilers, so the JIT can never run there; sandbox.sh seeds
+          # this prebuilt .so into the cache slot the JIT checks. The
+          # .so name carries the libmlx ABI fingerprint, so an mlx bump
+          # rebuilds it here and the seed stays correct.
+          postInstall = ''
+            export HOME="$TMPDIR/vllm-metal-home"
+            mkdir -p "$HOME"
+            PYTHONPATH="$out/${mlxPython.sitePackages}:$PYTHONPATH" \
+              python -c 'from vllm_metal.metal.build import build; print(build())'
+            install -Dm444 -t "$out/share/vllm-metal" \
+              "$HOME/.cache/vllm-metal/"_paged_ops-*
+          '';
           # Upstream's tests need Metal, which the nix build sandbox does
           # not have (the same reason nixpkgs builds mlx GPU-less), so no
           # check phase; at least prove the package imports against this

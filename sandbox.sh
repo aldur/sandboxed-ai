@@ -1163,6 +1163,19 @@ cmd_mtplx() {
   local mtplx_bin pkg_store
   mtplx_bin="$(resolve_binary "${MTPLX:-}" mtplx MTPLX)"
   pkg_store="$(pkg_store_for "$mtplx_bin")"
+  # Seed the prebuilt paged-attention extension into the cache slot the
+  # vendored vllm-metal JIT checks (~/.cache/vllm-metal, under the
+  # re-rooted HOME). The nix build compiles it once; the sandbox denies
+  # compilers, so without the seed mtplx falls back to the slower
+  # in-tree kernels. A non-nix install has no share dir: skip, same
+  # fallback. mtplx.sb grants map-exec on exactly this directory.
+  VLLM_METAL_CACHE="$HOME/.cache/vllm-metal"
+  local mtplx_share="${mtplx_bin%/bin/*}/share/vllm-metal"
+  if [[ -d "$mtplx_share" ]]; then
+    mkdir -p "$VLLM_METAL_CACHE"
+    cp -f "$mtplx_share"/_paged_ops-* "$VLLM_METAL_CACHE/"
+    chmod u+w "$VLLM_METAL_CACHE"/_paged_ops-*
+  fi
   resolve_ca_file
   resolve_darwin_dirs
   resolve_stdio
@@ -1230,6 +1243,7 @@ cmd_mtplx() {
     -D MLX_WRAPPED_INTERP="$MLX_WRAPPED_INTERP" \
     -D MODEL_DIR="$model_dir" \
     -D CACHE_DIR="$CACHE_DIR" \
+    -D VLLM_METAL_CACHE="$VLLM_METAL_CACHE" \
     -D TMPDIR="$TMPDIR" \
     -f "$PROFILES_DIR/mtplx.sb" \
     "$mtplx_bin" "${server_args[@]}" "${extra_args[@]}"
