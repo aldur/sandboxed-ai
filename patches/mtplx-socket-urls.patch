@@ -13,14 +13,15 @@
  def connect_host_for_bind(host: str | None) -> str:
      normalized = _unbracket_host(host).lower()
      if normalized in {"", "0.0.0.0", "::", "localhost"}:
-@@ -35,10 +41,16 @@
+@@ -35,10 +41,17 @@
  
  def local_url_for_bind(host: str | None, port: int, *, path: str = "") -> str:
      suffix = path if path.startswith("/") or not path else f"/{path}"
 +    if is_unix_socket_bind(host):
-+        # These URLs are display-only on the socket path. Show the curl
-+        # form instead of the unusable `http://<path>:<port>` string.
-+        return f"http://localhost{suffix} (--unix-socket {_clean_host(host)})"
++        # Callers append path segments to this URL, so keep it a clean
++        # URL. The socket path itself shows in bind_label and in the
++        # "Unix socket:" startup line.
++        return f"http://localhost{suffix}"
      return f"http://{url_host(connect_host_for_bind(host))}:{int(port)}{suffix}"
  
  
@@ -30,3 +31,28 @@
      raw = _unbracket_host(host)
      display = "[::]" if raw == "::" else (_clean_host(host) or "127.0.0.1")
      label = f"{display}:{int(port)}"
+--- a/mtplx/server/openai.py
++++ b/mtplx/server/openai.py
+@@ -192,6 +192,7 @@
+ )
+ from mtplx.server_urls import (
+     bind_label,
++    is_unix_socket_bind,
+     is_wildcard_bind,
+     local_url_for_bind,
+     network_url_for_bind,
+@@ -32291,6 +32292,14 @@
+     else:
+         _startup_line("Chat UI: " + chat_url)
+         _startup_line("OpenAI API Base URL: " + _startup_openai_base_url(args))
++    if is_unix_socket_bind(getattr(args, "host", None)):
++        # The URLs above use a placeholder localhost authority. Clients
++        # must dial the socket, e.g. `curl --unix-socket <path>`.
++        _startup_line(
++            "Unix socket: "
++            + str(args.host)
++            + " (dial with curl --unix-socket or a socket-capable client)"
++        )
+     _startup_line("Model: " + str(args.model_id))
+     _startup_line(
+         "Reasoning history: "
