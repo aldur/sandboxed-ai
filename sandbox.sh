@@ -246,6 +246,12 @@ Environment:
   MTPLX_SESSION_BANK_MAX_ENTRIES
                      mtplx session-cache budget overrides (e.g. 16G),
                      passed through into the sandbox
+  MTPLX_SESSION_POSTCOMMIT_MODE
+                     mtplx KV-commit policy; the wrapper defaults it to
+                     "inline" so agent loops keep their prompt cache
+                     ("async" restores the upstream idle commit)
+  MTPLX_POSTCOMMIT_FOREGROUND_GRACE_S, MTPLX_POSTCOMMIT_CROSS_SESSION_YIELD
+                     async-mode commit tuning, passed through
   NIX_SSL_CERT_FILE  CA bundle granted read-only to the mlx sandbox
   LLAMA_API_KEY, OPENAI_API_KEY
                      Client API keys; local servers accept the "dummy" default
@@ -1215,12 +1221,24 @@ cmd_mtplx() {
 
   cd "$CACHE_DIR"
 
-  # The MTPLX_SESSION_BANK_* overrides pass through on purpose: they
-  # carry byte sizes, not credentials, and the session-bank budget is a
-  # knob users legitimately turn (the server prints the override names).
+  # Commit the session KV cache inline, on the request thread. The
+  # upstream default is "async": it commits at idle priority. An agent
+  # loop sends the next request within seconds. That request preempts
+  # the idle commit, so the bank stores nothing. Each turn then pays a
+  # full re-prefill; at 150k tokens that is ~45 minutes. The inline
+  # commit always lands. It usually forwards only a short suffix, so
+  # it holds the stream open for seconds, not minutes. Set
+  # MTPLX_SESSION_POSTCOMMIT_MODE=async to restore the upstream mode.
+  : "${MTPLX_SESSION_POSTCOMMIT_MODE:=inline}"
+
+  # The MTPLX_SESSION_BANK_* and MTPLX_*POSTCOMMIT* overrides pass
+  # through on purpose: they carry sizes and policy words, not
+  # credentials, and they are knobs users legitimately turn (the
+  # server prints the override names).
   local -a sbx_env
   sandbox_env sbx_env HOME TMPDIR HF_HOME HF_HUB_OFFLINE PYTHONNOUSERSITE NIX_SSL_CERT_FILE \
-    MTPLX_SESSION_BANK_MAX_BYTES MTPLX_SESSION_BANK_PER_SESSION_BYTES MTPLX_SESSION_BANK_MAX_ENTRIES
+    MTPLX_SESSION_BANK_MAX_BYTES MTPLX_SESSION_BANK_PER_SESSION_BYTES MTPLX_SESSION_BANK_MAX_ENTRIES \
+    MTPLX_SESSION_POSTCOMMIT_MODE MTPLX_POSTCOMMIT_FOREGROUND_GRACE_S MTPLX_POSTCOMMIT_CROSS_SESSION_YIELD
   exec "${sbx_env[@]}" "$SANDBOX_EXEC" \
     -D COMMON_SB="$PROFILES_DIR/common.sb" \
     -D SERVER_SB="$PROFILES_DIR/server.sb" \
