@@ -145,8 +145,11 @@
           };
           # Serve on a UNIX domain socket when --host ends in .sock,
           # mirroring llama-server's convention (see sandbox.sh --host).
-          # The props patch adds a llama.cpp-compatible /props endpoint.
-          # The pi llama-cpp plugin requires it for model discovery.
+          # The props patch adds a llama.cpp-compatible /props endpoint
+          # and meta.n_ctx in /v1/models. The pi llama-cpp plugin needs
+          # /props for model discovery, and reads only meta.n_ctx at
+          # registration; without it, the plugin assumes an 8192 window
+          # until an async /props fetch.
           # The socket-urls patch fixes the startup display for socket
           # binds: it prints a curl form instead of http://<path>:<port>.
           # The silence-backoff patch doubles the stream-silence warning

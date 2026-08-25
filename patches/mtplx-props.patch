@@ -1,10 +1,9 @@
 --- a/mtplx/server/openai.py
 +++ b/mtplx/server/openai.py
-@@ -24937,6 +24937,27 @@
-                 "health": f"{server_url}/health",
+@@ -24938,6 +24938,27 @@
              },
          }
-+
+ 
 +    @app.get("/props")
 +    def props() -> dict[str, Any]:
 +        # Minimal llama.cpp-compatible /props endpoint. The pi llama-cpp
@@ -25,6 +24,18 @@
 +        if isinstance(template, str) and template:
 +            payload["chat_template"] = template
 +        return payload
- 
++
      @app.get("/health")
      def health() -> dict[str, Any]:
+         runtime = getattr(state, "runtime", None)
+@@ -26191,6 +26212,10 @@
+                     "context_length": state.context_window,
+                     "max_context_length": state.context_window,
+                     "max_model_len": state.context_window,
++                    # llama.cpp shape. The pi llama-cpp plugin reads only
++                    # meta.n_ctx at registration and falls back to 8192
++                    # without it, until an async /props fetch corrects it.
++                    "meta": {"n_ctx": state.context_window},
+                 }
+             )
+         retrieval = getattr(state, "retrieval", None)
