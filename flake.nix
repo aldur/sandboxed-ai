@@ -158,9 +158,16 @@
           # mirroring llama-server's convention (see sandbox.sh --host).
           # The props patch adds a llama.cpp-compatible /props endpoint.
           # The pi llama-cpp plugin requires it for model discovery.
+          # The socket-urls patch fixes the startup display for socket
+          # binds: it prints a curl form instead of http://<path>:<port>.
+          # The silence-backoff patch doubles the stream-silence warning
+          # interval up to 16 min, so a long prefill does not log one
+          # line per minute.
           patches = [
             ./patches/mtplx-unix-socket.patch
             ./patches/mtplx-props.patch
+            ./patches/mtplx-socket-urls.patch
+            ./patches/mtplx-silence-backoff.patch
           ];
           build-system = with mlxPython.pkgs; [
             setuptools

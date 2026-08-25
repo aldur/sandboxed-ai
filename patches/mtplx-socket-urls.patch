@@ -1,0 +1,32 @@
+--- a/mtplx/server_urls.py
++++ b/mtplx/server_urls.py
+@@ -18,6 +18,12 @@
+     return _unbracket_host(host).lower() in {"0.0.0.0", "::"}
+ 
+ 
++def is_unix_socket_bind(host: str | None) -> bool:
++    # llama-server's `--host *.sock` convention; see the unix-socket
++    # patch. A socket bind has no dialable TCP URL.
++    return _clean_host(host).endswith(".sock")
++
++
+ def connect_host_for_bind(host: str | None) -> str:
+     normalized = _unbracket_host(host).lower()
+     if normalized in {"", "0.0.0.0", "::", "localhost"}:
+@@ -35,10 +41,16 @@
+ 
+ def local_url_for_bind(host: str | None, port: int, *, path: str = "") -> str:
+     suffix = path if path.startswith("/") or not path else f"/{path}"
++    if is_unix_socket_bind(host):
++        # These URLs are display-only on the socket path. Show the curl
++        # form instead of the unusable `http://<path>:<port>` string.
++        return f"http://localhost{suffix} (--unix-socket {_clean_host(host)})"
+     return f"http://{url_host(connect_host_for_bind(host))}:{int(port)}{suffix}"
+ 
+ 
+ def bind_label(host: str | None, port: int) -> str:
++    if is_unix_socket_bind(host):
++        return f"{_clean_host(host)} (unix socket)"
+     raw = _unbracket_host(host)
+     display = "[::]" if raw == "::" else (_clean_host(host) or "127.0.0.1")
+     label = f"{display}:{int(port)}"

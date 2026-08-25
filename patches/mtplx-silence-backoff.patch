@@ -1,0 +1,52 @@
+--- a/mtplx/server/openai.py
++++ b/mtplx/server/openai.py
+@@ -356,6 +356,9 @@
+ STREAM_HEARTBEAT_INTERVAL_S = 10.0
+ STREAM_SILENCE_WARN_S = 30.0
+ STREAM_SILENCE_WARN_INTERVAL_S = 60.0
++# The silence warning doubles its interval up to this cap. A long
++# prefill then logs a handful of lines, not one line per minute.
++STREAM_SILENCE_WARN_INTERVAL_MAX_S = 960.0
+ # Stall containment (#86): a stream that receives nothing while the model
+ # owner's progress heartbeat is frozen for this long is failed with a
+ # structured error instead of hanging forever. Healthy work ticks the
+@@ -27385,6 +27388,7 @@
+                 # to expose queue residency — the direct starvation receipt.
+                 latest_token_enqueue_s: float | None = None
+                 next_silence_warn_s = stream_started_s + STREAM_SILENCE_WARN_S
++                silence_warn_interval_s = STREAM_SILENCE_WARN_INTERVAL_S
+                 owner_stall_probe = _OwnerStallProbe(deadline_s=STREAM_STALL_DEADLINE_S)
+ 
+                 def mark_sse_sent(chunk: str) -> str:
+@@ -28668,7 +28672,7 @@
+                     return f"data: {json.dumps(payload)}\n\n"
+ 
+                 def maybe_log_stream_silence(now_s: float) -> None:
+-                    nonlocal next_silence_warn_s
++                    nonlocal next_silence_warn_s, silence_warn_interval_s
+                     last_activity_s = (
+                         last_token_s if last_token_s is not None else stream_started_s
+                     )
+@@ -28726,7 +28730,11 @@
+                             ensure_ascii=False,
+                         )
+                     )
+-                    next_silence_warn_s = now_s + STREAM_SILENCE_WARN_INTERVAL_S
++                    next_silence_warn_s = now_s + silence_warn_interval_s
++                    silence_warn_interval_s = min(
++                        silence_warn_interval_s * 2.0,
++                        STREAM_SILENCE_WARN_INTERVAL_MAX_S,
++                    )
+ 
+                 generated: dict[str, Any] | None = None
+                 history_reasoning_chunks: list[str] = []
+@@ -29251,6 +29259,9 @@
+                                 next_silence_warn_s = (
+                                     token_timestamp_s + STREAM_SILENCE_WARN_S
+                                 )
++                                silence_warn_interval_s = (
++                                    STREAM_SILENCE_WARN_INTERVAL_S
++                                )
+                                 if streamed_decode_started_s is None:
+                                     streamed_decode_started_s = token_timestamp_s
+                                     _flight(state).note_decode_started(
