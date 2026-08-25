@@ -88,17 +88,6 @@
                 mlx-lm = pyPrev.mlx-lm.overrideAttrs (old: {
                   patches = (old.patches or [ ]) ++ [ ./patches/mlx-lm-unix-socket.patch ];
                 });
-                # The dotfiles wheel package copies only lib/ out of the
-                # mlx_metal wheel. The C++ headers stay behind. mtplx
-                # compiles its paged-attention extension against them at
-                # build time (see the mtplx postInstall), so copy
-                # include/ as well.
-                mlx = pyPrev.mlx.overrideAttrs (old: {
-                  postInstall = (old.postInstall or "") + ''
-                    cp -r ${pyPrev.mlx.mlx_metal}/${pyFinal.python.sitePackages}/mlx/include \
-                      "$out/${pyFinal.python.sitePackages}/mlx/"
-                  '';
-                });
               })
             ];
           })
