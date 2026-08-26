@@ -6,7 +6,7 @@
  
 +def is_unix_socket_bind(host: str | None) -> bool:
 +    # llama-server's `--host *.sock` convention; see the unix-socket
-+    # patch. A socket bind has no dialable TCP URL.
++    # patch. A socket bind has no TCP URL.
 +    return _clean_host(host).endswith(".sock")
 +
 +
@@ -18,8 +18,8 @@
  def local_url_for_bind(host: str | None, port: int, *, path: str = "") -> str:
      suffix = path if path.startswith("/") or not path else f"/{path}"
 +    if is_unix_socket_bind(host):
-+        # Callers append path segments to this URL, so keep it a clean
-+        # URL. The socket path itself shows in bind_label and in the
++        # Callers append path segments to this URL. Keep it a clean
++        # URL. The socket path shows in bind_label and in the
 +        # "Unix socket:" startup line.
 +        return f"http://localhost{suffix}"
      return f"http://{url_host(connect_host_for_bind(host))}:{int(port)}{suffix}"
@@ -41,13 +41,14 @@
      is_wildcard_bind,
      local_url_for_bind,
      network_url_for_bind,
-@@ -32291,6 +32292,14 @@
+@@ -32291,6 +32292,15 @@
      else:
          _startup_line("Chat UI: " + chat_url)
          _startup_line("OpenAI API Base URL: " + _startup_openai_base_url(args))
 +    if is_unix_socket_bind(getattr(args, "host", None)):
-+        # The URLs above use a placeholder localhost authority. Clients
-+        # must dial the socket, e.g. `curl --unix-socket <path>`.
++        # The URLs above show localhost as a placeholder. A client
++        # must connect through the socket, for example with
++        # `curl --unix-socket <path>`.
 +        _startup_line(
 +            "Unix socket: "
 +            + str(args.host)

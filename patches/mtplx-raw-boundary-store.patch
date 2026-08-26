@@ -1,0 +1,41 @@
+--- a/mtplx/server/openai.py
++++ b/mtplx/server/openai.py
+@@ -17895,6 +17895,14 @@
+     return expanded_ids, history_splice
+ 
+ 
++def _raw_boundary_fallback_enabled() -> bool:
++    """Store the prompt+reply tokens when the history check fails.
++
++    Off by default. The sandboxed-ai wrapper turns it on."""
++    raw = str(os.environ.get("MTPLX_RAW_BOUNDARY_FALLBACK", "0")).strip().lower()
++    return raw in {"1", "true", "on", "yes"}
++
++
+ def _generation_final_postcommit_compatibility(
+     state: ServerState,
+     *,
+@@ -18031,6 +18039,23 @@
+         reason = "reasoning_history_scoping_mismatch"
+     elif str(generated.get("finish_reason") or "") == "stop":
+         reason = "stop_token_boundary_mismatch"
++    if _raw_boundary_fallback_enabled():
++        # The check above rebuilds the history and compares tokens.
++        # That rebuild can fail while the cache is still correct.
++        # Measured 2026-08-26 with pi: the rebuild matched 0 tokens,
++        # but the next prompt matched all 184,541 stored tokens.
++        # So store the exact prompt_ids + generated tokens instead.
++        # A restore first compares tokens. A stored entry thus can
++        # not serve a wrong cache. It can only go unused.
++        bank_ids = _bank_view(final_token_ids)
++        if bank_ids is not None:
++            return {
++                "safe": True,
++                "mode": "generation_final_raw",
++                "reason": reason,
++                "token_ids": bank_ids,
++                "history_suffix_tokens": 0,
++            }
+     return {
+         "safe": False,
+         "mode": "unsafe",

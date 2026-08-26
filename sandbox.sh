@@ -252,6 +252,10 @@ Environment:
                      so agent loops keep their prompt cache)
   MTPLX_SESSION_POSTCOMMIT_MODE, MTPLX_POSTCOMMIT_CROSS_SESSION_YIELD
                      mtplx KV-commit policy overrides, passed through
+  MTPLX_RAW_BOUNDARY_FALLBACK
+                     store the KV cache under the exact prompt+reply
+                     tokens when the server's history check fails
+                     (wrapper default: 1)
   NIX_SSL_CERT_FILE  CA bundle granted read-only to the mlx sandbox
   LLAMA_API_KEY, OPENAI_API_KEY
                      Client API keys; local servers accept the "dummy" default
@@ -1221,24 +1225,33 @@ cmd_mtplx() {
 
   cd "$CACHE_DIR"
 
-  # Give the async KV commit a long foreground grace. The upstream
-  # grace is 2 s. An agent loop sends the next request within seconds.
-  # The commit always lost, so the bank stored nothing. Each turn then
-  # paid a full re-prefill (~45 min at 150k tokens). With this grace
-  # the commit lands: it reuses the live cache and forwards only the
-  # divergent suffix. The grace also bounds a bad commit at 120 s.
-  # Do not default to "inline" mode: it held the stream open for a
-  # full re-prefill and built a second cache, which OOMed the GPU.
+  # Give the KV-cache commit more time before it yields. The upstream
+  # limit is 2 s. An agent sends the next request within seconds. The
+  # commit always lost, and the server stored no cache. Each turn then
+  # computed the full history again (~45 min at 150k tokens). With
+  # 120 s the commit can finish. The limit also stops a bad commit at
+  # 120 s. Do not set "inline" mode. That mode held the stream open
+  # for a full recompute, built a second cache, and filled the GPU
+  # memory.
   : "${MTPLX_POSTCOMMIT_FOREGROUND_GRACE_S:=120}"
 
+  # Store the KV cache under the exact prompt+reply tokens when the
+  # server's history check fails. This needs the raw-boundary patch.
+  # Measured 2026-08-26: the check matched 0 tokens, but the next pi
+  # prompt matched all 184,541 stored tokens. A restore first
+  # compares tokens, so a stored entry can not serve a wrong cache.
+  # Set MTPLX_RAW_BOUNDARY_FALLBACK=0 to disable this.
+  : "${MTPLX_RAW_BOUNDARY_FALLBACK:=1}"
+
   # The MTPLX_SESSION_BANK_* and MTPLX_*POSTCOMMIT* overrides pass
-  # through on purpose: they carry sizes and policy words, not
-  # credentials, and they are knobs users legitimately turn (the
-  # server prints the override names).
+  # through on purpose. They carry sizes and policy words, not
+  # credentials. Users turn these knobs; the server prints the
+  # override names.
   local -a sbx_env
   sandbox_env sbx_env HOME TMPDIR HF_HOME HF_HUB_OFFLINE PYTHONNOUSERSITE NIX_SSL_CERT_FILE \
     MTPLX_SESSION_BANK_MAX_BYTES MTPLX_SESSION_BANK_PER_SESSION_BYTES MTPLX_SESSION_BANK_MAX_ENTRIES \
-    MTPLX_SESSION_POSTCOMMIT_MODE MTPLX_POSTCOMMIT_FOREGROUND_GRACE_S MTPLX_POSTCOMMIT_CROSS_SESSION_YIELD
+    MTPLX_SESSION_POSTCOMMIT_MODE MTPLX_POSTCOMMIT_FOREGROUND_GRACE_S MTPLX_POSTCOMMIT_CROSS_SESSION_YIELD \
+    MTPLX_RAW_BOUNDARY_FALLBACK
   exec "${sbx_env[@]}" "$SANDBOX_EXEC" \
     -D COMMON_SB="$PROFILES_DIR/common.sb" \
     -D SERVER_SB="$PROFILES_DIR/server.sb" \

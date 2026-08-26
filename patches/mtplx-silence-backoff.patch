@@ -5,7 +5,7 @@
  STREAM_SILENCE_WARN_S = 30.0
  STREAM_SILENCE_WARN_INTERVAL_S = 60.0
 +# The silence warning doubles its interval up to this cap. A long
-+# prefill then logs a handful of lines, not one line per minute.
++# prefill then logs a few lines, not one line per minute.
 +STREAM_SILENCE_WARN_INTERVAL_MAX_S = 960.0
  # Stall containment (#86): a stream that receives nothing while the model
  # owner's progress heartbeat is frozen for this long is failed with a

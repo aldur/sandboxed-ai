@@ -151,15 +151,23 @@
           # registration; without it, the plugin assumes an 8192 window
           # until an async /props fetch.
           # The socket-urls patch fixes the startup display for socket
-          # binds: it prints a curl form instead of http://<path>:<port>.
+          # binds. It prints clean URLs and the socket path, not
+          # http://<path>:<port>.
           # The silence-backoff patch doubles the stream-silence warning
-          # interval up to 16 min, so a long prefill does not log one
-          # line per minute.
+          # interval up to 16 min. A long prefill then logs a few
+          # lines, not one line per minute.
+          # The raw-boundary patch stores the KV cache under the exact
+          # prompt+reply tokens when the server's history check fails
+          # (MTPLX_RAW_BOUNDARY_FALLBACK, set by sandbox.sh). The check
+          # matched 0 tokens, but the next pi prompt matched all of
+          # them. Without the patch, each agent turn computes the full
+          # history again.
           patches = [
             ./patches/mtplx-unix-socket.patch
             ./patches/mtplx-props.patch
             ./patches/mtplx-socket-urls.patch
             ./patches/mtplx-silence-backoff.patch
+            ./patches/mtplx-raw-boundary-store.patch
           ];
           build-system = with mlxPython.pkgs; [
             setuptools

@@ -781,6 +781,56 @@ PYEOF
       else
         ok "mtplx (tcp) long-context run uses external ops, no fallback"
       fi
+
+      # Agent-loop cache continuity. An agent sends the next request
+      # within seconds. That race canceled the KV-cache commit. Each
+      # turn then computed the full history again (measured 2026-08-25:
+      # ~45 min at 150k tokens). The wrapper now gives the commit more
+      # time. Grow a session, then send two more turns back to back.
+      # The history carries the real assistant output, like a real
+      # loop. Assert that each later turn restores the stored cache.
+      # Also fail on a Metal OOM line in the log. A broken commit once
+      # built a second KV cache and filled the GPU memory.
+      if "$PY" - "$PORT" "$WORK" <<'PYEOF'
+import json, sys, urllib.request
+port, work = sys.argv[1], sys.argv[2]
+url = f"http://127.0.0.1:{port}/v1/chat/completions"
+filler = "A quick brown fox jumps over one lazy dog again and again. " * 700
+msgs = [{"role": "user", "content": filler + "\nSay READY."}]
+def chat(out):
+    req = urllib.request.Request(
+        url,
+        data=json.dumps({"messages": msgs, "max_tokens": 40}).encode(),
+        headers={"Content-Type": "application/json"})
+    # Generous timeout: the first request prefills thousands of tokens.
+    d = json.load(urllib.request.urlopen(req, timeout=900))
+    open(out, "w").write(json.dumps(d))
+    return d
+hits = []
+for turn in (1, 2, 3):
+    d = chat(f"{work}/mtplx-loop-{turn}.json")
+    s = d.get("mtplx_stats") or {}
+    hits.append(bool(s.get("session_cache_hit")))
+    reply = ((d.get("choices") or [{}])[0].get("message") or {})
+    content = str(reply.get("content") or "").strip() or "READY."
+    msgs = msgs + [
+        {"role": "assistant", "content": content},
+        {"role": "user", "content": f"Turn {turn} is done. Say OK."},
+    ]
+    print(f"turn={turn} cache_hit={hits[-1]} "
+          f"restore_mode={s.get('session_restore_mode')}")
+sys.exit(0 if hits[1] and hits[2] else 1)
+PYEOF
+      then
+        ok "mtplx (tcp) keeps the KV cache across back-to-back agent turns"
+      else
+        fail "mtplx (tcp) keeps the KV cache across back-to-back agent turns" "$WORK/mtplx-loop-3.json"
+      fi
+      if grep -q 'Insufficient Memory' "$WORK/mtplx-tcp.log"; then
+        fail "mtplx (tcp) agent-loop run stays inside GPU memory" "$WORK/mtplx-tcp.log"
+      else
+        ok "mtplx (tcp) agent-loop run stays inside GPU memory"
+      fi
     else
       skip "mtplx long-context session machinery" "no python3 in $PKG_STORE"
     fi
