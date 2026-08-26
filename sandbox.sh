@@ -246,12 +246,12 @@ Environment:
   MTPLX_SESSION_BANK_MAX_ENTRIES
                      mtplx session-cache budget overrides (e.g. 16G),
                      passed through into the sandbox
-  MTPLX_SESSION_POSTCOMMIT_MODE
-                     mtplx KV-commit policy; the wrapper defaults it to
-                     "inline" so agent loops keep their prompt cache
-                     ("async" restores the upstream idle commit)
-  MTPLX_POSTCOMMIT_FOREGROUND_GRACE_S, MTPLX_POSTCOMMIT_CROSS_SESSION_YIELD
-                     async-mode commit tuning, passed through
+  MTPLX_POSTCOMMIT_FOREGROUND_GRACE_S
+                     seconds the async KV commit can run before it
+                     yields to a queued request (wrapper default: 120,
+                     so agent loops keep their prompt cache)
+  MTPLX_SESSION_POSTCOMMIT_MODE, MTPLX_POSTCOMMIT_CROSS_SESSION_YIELD
+                     mtplx KV-commit policy overrides, passed through
   NIX_SSL_CERT_FILE  CA bundle granted read-only to the mlx sandbox
   LLAMA_API_KEY, OPENAI_API_KEY
                      Client API keys; local servers accept the "dummy" default
@@ -1221,15 +1221,15 @@ cmd_mtplx() {
 
   cd "$CACHE_DIR"
 
-  # Commit the session KV cache inline, on the request thread. The
-  # upstream default is "async": it commits at idle priority. An agent
-  # loop sends the next request within seconds. That request preempts
-  # the idle commit, so the bank stores nothing. Each turn then pays a
-  # full re-prefill; at 150k tokens that is ~45 minutes. The inline
-  # commit always lands. It usually forwards only a short suffix, so
-  # it holds the stream open for seconds, not minutes. Set
-  # MTPLX_SESSION_POSTCOMMIT_MODE=async to restore the upstream mode.
-  : "${MTPLX_SESSION_POSTCOMMIT_MODE:=inline}"
+  # Give the async KV commit a long foreground grace. The upstream
+  # grace is 2 s. An agent loop sends the next request within seconds.
+  # The commit always lost, so the bank stored nothing. Each turn then
+  # paid a full re-prefill (~45 min at 150k tokens). With this grace
+  # the commit lands: it reuses the live cache and forwards only the
+  # divergent suffix. The grace also bounds a bad commit at 120 s.
+  # Do not default to "inline" mode: it held the stream open for a
+  # full re-prefill and built a second cache, which OOMed the GPU.
+  : "${MTPLX_POSTCOMMIT_FOREGROUND_GRACE_S:=120}"
 
   # The MTPLX_SESSION_BANK_* and MTPLX_*POSTCOMMIT* overrides pass
   # through on purpose: they carry sizes and policy words, not
