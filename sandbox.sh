@@ -244,8 +244,9 @@ Environment:
                      (set by the Nix wrapper; required for the pi command)
   MTPLX_SESSION_BANK_MAX_BYTES, MTPLX_SESSION_BANK_PER_SESSION_BYTES,
   MTPLX_SESSION_BANK_MAX_ENTRIES
-                     mtplx session-cache budget overrides (e.g. 16G),
-                     passed through into the sandbox
+                     mtplx session-cache budgets (wrapper defaults:
+                     8G total, 4G per session; the server's auto
+                     formula overcommits RAM on long contexts)
   MTPLX_POSTCOMMIT_FOREGROUND_GRACE_S
                      seconds the async KV commit can run before it
                      yields to a queued request (wrapper default: 120,
@@ -1234,6 +1235,16 @@ cmd_mtplx() {
   # for a full recompute, built a second cache, and filled the GPU
   # memory.
   : "${MTPLX_POSTCOMMIT_FOREGROUND_GRACE_S:=120}"
+
+  # Cap the KV-cache store. The server's auto formula takes half of
+  # (RAM - weights). It ignores the live cache, which grows with the
+  # context, the 6G MLX allocator cache, and transient copies. On a
+  # 64 GB Mac with a 184k-token session, the auto value caused a GPU
+  # out-of-memory stop. With a 4G per-session cap, a large session
+  # keeps a no-copy reference instead of a stored copy. Small
+  # sessions still get full stored copies.
+  : "${MTPLX_SESSION_BANK_MAX_BYTES:=8G}"
+  : "${MTPLX_SESSION_BANK_PER_SESSION_BYTES:=4G}"
 
   # Store the KV cache under the exact prompt+reply tokens when the
   # server's history check fails. This needs the raw-boundary patch.
