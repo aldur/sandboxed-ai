@@ -41,4 +41,4 @@ jobs:
         # nothing here and covers the cold-start path a warm cache hides.
         env:
           SANDBOXED_AI_TEST_COLD_METAL: "1"
-        run: nix develop --command tests/e2e.sh
+        run: nix develop .#e2e --command tests/e2e.sh

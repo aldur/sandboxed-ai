@@ -51,6 +51,9 @@ skip() { printf 'skip - %s (%s)\n' "$1" "$2"; SKIP=$((SKIP + 1)); }
 # real servers.
 SERVER_PID=""
 start_server() { # $1 log-name, rest: sandbox.sh args
+  # Stop the tracked server first. A second server on the same port dies
+  # at bind, while wait_http keeps getting 200s from the orphaned first.
+  stop_server
   local log="$WORK/$1.log"
   shift
   "$SANDBOX" "$@" >"$log" 2>&1 &
@@ -583,8 +586,10 @@ if [[ -n "$MLX_SERVER" ]]; then
     # MODEL_DIR for the served model only. Anything else listed here — an
     # entry left in the HF cache by an earlier run, say — is a model the
     # server will be denied when a client asks for it.
+    # grep, not python: PY is empty outside the e2e devshell, and an empty
+    # interpreter would report "none" for a server that lists correctly.
     listed="$(curl -s --max-time 5 "http://127.0.0.1:$PORT/v1/models" |
-      "$PY" -c 'import sys,json; print(" ".join(m["id"] for m in json.load(sys.stdin)["data"]))' 2>/dev/null)"
+      grep -o '"id": *"[^"]*"' | sed 's/.*: *"//; s/"$//' | paste -sd " " -)"
     if [[ "$listed" == "$TEST_MLX_MODEL" ]]; then
       ok "mlx-server advertises only the model it is serving"
     else
