@@ -119,7 +119,12 @@ hf_curl_init() {
   HF_CURL_BIN="$(resolve_binary "${CURL:-}" curl CURL)"
   case "$HF_CURL_BIN" in
   /usr/*) HF_CURL_STORE=/usr ;; # system curl: no package store
-  *) HF_CURL_STORE="$(pkg_store_for "$HF_CURL_BIN")" ;;
+  /nix/* | /opt/homebrew/*) HF_CURL_STORE="$(pkg_store_for "$HF_CURL_BIN")" ;;
+  # Refuse here, not inside pkg_store_for: hf_curl first runs under
+  # `$(hf_listing ...) || ...`, where errexit is off, so a `die` in the
+  # `$(...)` ends only the subshell and an empty PKG_STORE reaches
+  # sandbox-exec ("empty subpath pattern").
+  *) die "cannot determine package store for: $HF_CURL_BIN" ;;
   esac
   local ca
   HF_CA_FILE=""

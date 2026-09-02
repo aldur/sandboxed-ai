@@ -33,3 +33,8 @@
 ;; The CA bundle, passed explicitly as --cacert (see hf_curl).
 (allow file-read*
   (literal (param "CA_FILE")))
+;; The system curl links LibreSSL, which opens this file at startup. A
+;; missing file is fine, but a denied one is fatal: "Auto configuration
+;; failed", exit 1, and every fetch returns an empty listing.
+(allow file-read*
+  (literal "/private/etc/ssl/openssl.cnf"))

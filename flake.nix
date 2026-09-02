@@ -331,6 +331,10 @@
           packages = [
             sandboxed-ai
             pkgs.python3
+            # tests/e2e.sh runs the working-tree sandbox.sh, not the
+            # wrapper, so the fetch sandbox takes curl from this PATH.
+            # Pin the same curl the wrapper uses, not the system one.
+            pkgs.curl
           ];
         };
       };
