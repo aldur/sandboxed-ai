@@ -50,7 +50,7 @@ checksum-verified. The sandbox reads them read-only.
 
 ### `mlx-lm`
 
-[MLX][5]'s' `mlx_lm.server` exposes the an OpenAI-compatible API as well
+[MLX][5]'s `mlx_lm.server` exposes the an OpenAI-compatible API as well
 
 ```bash
 # Install mlx_lm or use `nix develop`
