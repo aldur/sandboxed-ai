@@ -258,10 +258,6 @@ Environment:
                      so agent loops keep their prompt cache)
   MTPLX_SESSION_POSTCOMMIT_MODE, MTPLX_POSTCOMMIT_CROSS_SESSION_YIELD
                      mtplx KV-commit policy overrides, passed through
-  MTPLX_RAW_BOUNDARY_FALLBACK
-                     store the KV cache under the exact prompt+reply
-                     tokens when the server's history check fails
-                     (wrapper default: 1)
   NIX_SSL_CERT_FILE  CA bundle granted read-only to the mlx sandbox
   LLAMA_API_KEY, OPENAI_API_KEY
                      Client API keys; local servers accept the "dummy" default
@@ -1251,14 +1247,6 @@ cmd_mtplx() {
   : "${MTPLX_SESSION_BANK_MAX_BYTES:=8G}"
   : "${MTPLX_SESSION_BANK_PER_SESSION_BYTES:=4G}"
 
-  # Store the KV cache under the exact prompt+reply tokens when the
-  # server's history check fails. This needs the raw-boundary patch.
-  # Measured 2026-08-26: the check matched 0 tokens, but the next pi
-  # prompt matched all 184,541 stored tokens. A restore first
-  # compares tokens, so a stored entry can not serve a wrong cache.
-  # Set MTPLX_RAW_BOUNDARY_FALLBACK=0 to disable this.
-  : "${MTPLX_RAW_BOUNDARY_FALLBACK:=1}"
-
   # The MTPLX_SESSION_BANK_* and MTPLX_*POSTCOMMIT* overrides pass
   # through on purpose. They carry sizes and policy words, not
   # credentials. Users turn these knobs; the server prints the
@@ -1266,8 +1254,7 @@ cmd_mtplx() {
   local -a sbx_env
   sandbox_env sbx_env HOME TMPDIR HF_HOME HF_HUB_OFFLINE PYTHONNOUSERSITE NIX_SSL_CERT_FILE \
     MTPLX_SESSION_BANK_MAX_BYTES MTPLX_SESSION_BANK_PER_SESSION_BYTES MTPLX_SESSION_BANK_MAX_ENTRIES \
-    MTPLX_SESSION_POSTCOMMIT_MODE MTPLX_POSTCOMMIT_FOREGROUND_GRACE_S MTPLX_POSTCOMMIT_CROSS_SESSION_YIELD \
-    MTPLX_RAW_BOUNDARY_FALLBACK
+    MTPLX_SESSION_POSTCOMMIT_MODE MTPLX_POSTCOMMIT_FOREGROUND_GRACE_S MTPLX_POSTCOMMIT_CROSS_SESSION_YIELD
   exec "${sbx_env[@]}" "$SANDBOX_EXEC" \
     -D COMMON_SB="$PROFILES_DIR/common.sb" \
     -D SERVER_SB="$PROFILES_DIR/server.sb" \

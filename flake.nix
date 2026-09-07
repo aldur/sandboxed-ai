@@ -137,11 +137,11 @@
       mtplx = mlxPython.pkgs.toPythonApplication (
         mlxPython.pkgs.buildPythonPackage rec {
           pname = "mtplx";
-          version = "2.9.1";
+          version = "2.11.2";
           pyproject = true;
           src = pkgs.fetchPypi {
             inherit pname version;
-            hash = "sha256-czLIhkQmOZmfDAPYl8M0R/Er41AXUuOUB8/c3tGgQr4=";
+            hash = "sha256-Ly5tjtYPlvXvVEViIrOdGDVUbZZD3xETOZbmlx30Z+g=";
           };
           # Serve on a UNIX domain socket when --host ends in .sock,
           # mirroring llama-server's convention (see sandbox.sh --host).
@@ -156,18 +156,11 @@
           # The silence-backoff patch doubles the stream-silence warning
           # interval up to 16 min. A long prefill then logs a few
           # lines, not one line per minute.
-          # The raw-boundary patch stores the KV cache under the exact
-          # prompt+reply tokens when the server's history check fails
-          # (MTPLX_RAW_BOUNDARY_FALLBACK, set by sandbox.sh). The check
-          # matched 0 tokens, but the next pi prompt matched all of
-          # them. Without the patch, each agent turn computes the full
-          # history again.
           patches = [
             ./patches/mtplx-unix-socket.patch
             ./patches/mtplx-props.patch
             ./patches/mtplx-socket-urls.patch
             ./patches/mtplx-silence-backoff.patch
-            ./patches/mtplx-raw-boundary-store.patch
           ];
           build-system = with mlxPython.pkgs; [
             setuptools

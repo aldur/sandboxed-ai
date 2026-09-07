@@ -1,6 +1,6 @@
 --- a/mtplx/commands/public.py
 +++ b/mtplx/commands/public.py
-@@ -369,7 +369,12 @@
+@@ -380,7 +380,12 @@
  
  
  def _is_localhost_bind(host: str | None) -> bool:
@@ -16,7 +16,7 @@
  def _benchmark_seed(args: Any, *, runtime_profile: str, harness: str) -> int:
 --- a/mtplx/server/openai.py
 +++ b/mtplx/server/openai.py
-@@ -3470,7 +3470,12 @@
+@@ -4672,7 +4672,12 @@
  
  
  def _is_localhost_bind(host: str | None) -> bool:
@@ -30,7 +30,7 @@
  
  
  def validate_server_security_args(args: argparse.Namespace) -> None:
-@@ -32354,6 +32359,38 @@
+@@ -36837,6 +36842,38 @@
      # uvicorn wait forever on Ctrl-C. The deadline lets in-flight requests
      # finish, then cancels lingering streams and exits normally — atexit
      # cleanup (thermal restore) still runs, unlike a hard os._exit.

@@ -1,6 +1,6 @@
 --- a/mtplx/server/openai.py
 +++ b/mtplx/server/openai.py
-@@ -24938,6 +24938,27 @@
+@@ -28870,6 +28870,27 @@
              },
          }
  
@@ -28,7 +28,7 @@
      @app.get("/health")
      def health() -> dict[str, Any]:
          runtime = getattr(state, "runtime", None)
-@@ -26191,6 +26212,10 @@
+@@ -30140,6 +30161,10 @@
                      "context_length": state.context_window,
                      "max_context_length": state.context_window,
                      "max_model_len": state.context_window,

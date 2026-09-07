@@ -33,7 +33,7 @@
      label = f"{display}:{int(port)}"
 --- a/mtplx/server/openai.py
 +++ b/mtplx/server/openai.py
-@@ -192,6 +192,7 @@
+@@ -196,6 +196,7 @@
  )
  from mtplx.server_urls import (
      bind_label,
@@ -41,7 +41,7 @@
      is_wildcard_bind,
      local_url_for_bind,
      network_url_for_bind,
-@@ -32291,6 +32292,15 @@
+@@ -36804,6 +36805,15 @@
      else:
          _startup_line("Chat UI: " + chat_url)
          _startup_line("OpenAI API Base URL: " + _startup_openai_base_url(args))
