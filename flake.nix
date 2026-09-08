@@ -112,9 +112,17 @@
             mlxPython.pkgs.torch
             mlxPython.pkgs.torchvision
           ];
-          # Serve on a UNIX domain socket when --host ends in .sock,
-          # mirroring llama-server's convention (see sandbox.sh --host).
-          patches = (old.patches or [ ]) ++ [ ./patches/mlx-vlm-unix-socket.patch ];
+          patches = (old.patches or [ ]) ++ [
+            # Serve on a UNIX domain socket when --host ends in .sock,
+            # mirroring llama-server's convention (see sandbox.sh --host).
+            ./patches/mlx-vlm-unix-socket.patch
+            # mlx 0.32.2 (nanobind 2.15) no longer converts a 0-d mx.array
+            # to a Python int. mlx-vlm 0.4.4 passes grid_thw cells to
+            # mx.repeat / mx.tile that way, so the Qwen-VL family (and
+            # dots_ocr, glm4v, paddleocr, lfm2, aya) fails at load.
+            # Backport of upstream #1982, first released in v0.6.16.
+            ./patches/mlx-vlm-array-as-int.patch
+          ];
           # mlx 0.32 rejects the zero-size AvgPool2d kernel this test's
           # Gemma3 config computes; mlx-vlm 0.4.4 predates that mlx.
           # One known-incompatible test — the rest of the suite still runs.
