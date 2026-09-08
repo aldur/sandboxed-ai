@@ -8,3 +8,10 @@ updates:
       default-days: 3
     commit-message:
       prefix: "flake"
+    # One PR for all flake inputs. The inputs move together: the dotfiles
+    # overlay pins the mlx wheel that the nixpkgs python set builds
+    # against, so a separate PR per input tests a mix that never ships.
+    groups:
+      flake-inputs:
+        patterns:
+          - "*"
