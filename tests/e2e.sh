@@ -118,12 +118,13 @@ flake_bin() { # $1 flake attr, $2 binary name, $3 override var name
 
 echo "# resolving the toolchain from the flake (this builds on first run)…"
 LLAMA_SERVER="$(flake_bin llama-cpp llama-server LLAMA_SERVER)"
+LLAMA_BENCH="$(flake_bin llama-cpp llama-bench LLAMA_BENCH)"
 MLX_SERVER="$(flake_bin mlx-lm mlx_lm.server MLX_SERVER)"
 MLX_VLM_SERVER="$(flake_bin mlx-vlm mlx_vlm.server MLX_VLM_SERVER)"
 MTPLX="$(flake_bin mtplx mtplx MTPLX)"
 LLM="$(flake_bin llm llm LLM)"
 PI="$(flake_bin pi pi PI)"
-export LLAMA_SERVER MLX_SERVER MLX_VLM_SERVER MTPLX LLM PI
+export LLAMA_SERVER LLAMA_BENCH MLX_SERVER MLX_VLM_SERVER MTPLX LLM PI
 if [[ -z "${PI_LLAMA_DIR:-}" ]] && command -v nix >/dev/null; then
   PI_LLAMA_DIR="$(nix build --no-link --print-out-paths "$ROOT#pi-llama" 2>/dev/null)" || PI_LLAMA_DIR=""
   export PI_LLAMA_DIR
@@ -170,6 +171,29 @@ fi
 
 echo "# models: $TEST_GGUF_MODEL / $TEST_MLX_MODEL"
 echo "# work:   $WORK"
+
+# ── llama-bench: redirected output stays valid JSON ───────
+if [[ -n "$PY" && -n "$LLAMA_BENCH" ]]; then
+  if "$SANDBOX" llama-bench --model "$TEST_GGUF_MODEL" \
+    -ngl 99 -fa on -p 0 -n 8 -d 32 -r 1 -o json \
+    >"$WORK/bench.json" 2>"$WORK/bench.log" &&
+    "$PY" - "$WORK/bench.json" <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    rows = json.load(f)
+assert len(rows) == 1
+row = rows[0]
+assert (row['n_prompt'], row['n_gen'], row['n_depth']) == (0, 8, 32)
+assert len(row['samples_ns']) == 1 and row['samples_ns'][0] > 0
+PYEOF
+  then
+    ok "llama-bench returns valid JSON with the requested depth"
+  else
+    fail "llama-bench returns valid JSON with the requested depth" "$WORK/bench.log"
+  fi
+else
+  skip "llama-bench JSON" "python or llama-bench unavailable"
+fi
 
 # ── llama-server: TCP ─────────────────────────────────────
 # Credential-shaped variables the caller's shell might hold: the sandboxed

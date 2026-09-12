@@ -821,11 +821,14 @@ cmd_bench() {
     extra_args=()
   else
     bench_args=(-m "$model_path")
-    printf 'Starting sandboxed llama-bench:\n'
-    info "binary:" "$llama_bench"
-    info "model:" "$model_path"
-    info "extra:" "${extra_args[*]:-none}"
-    printf '\n'
+    # Keep stdout machine-readable for -o json/csv/jsonl.
+    {
+      printf 'Starting sandboxed llama-bench:\n'
+      info "binary:" "$llama_bench"
+      info "model:" "$model_path"
+      info "extra:" "${extra_args[*]:-none}"
+      printf '\n'
+    } >&2
   fi
 
   cd "$CACHE_DIR"
