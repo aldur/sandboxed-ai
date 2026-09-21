@@ -145,11 +145,11 @@
       mtplx = mlxPython.pkgs.toPythonApplication (
         mlxPython.pkgs.buildPythonPackage rec {
           pname = "mtplx";
-          version = "2.11.2";
+          version = "2.11.3";
           pyproject = true;
           src = pkgs.fetchPypi {
             inherit pname version;
-            hash = "sha256-Ly5tjtYPlvXvVEViIrOdGDVUbZZD3xETOZbmlx30Z+g=";
+            hash = "sha256-Pw2jGuJRxO41CtPSSy1QhReCEI97saKZWW9Y61iOqZI=";
           };
           # Serve on a UNIX domain socket when --host ends in .sock,
           # mirroring llama-server's convention (see sandbox.sh --host).
