@@ -34,12 +34,12 @@
           (
             finalAttrs: old: {
               # Optionally: bump to a more recent version than nixpkgs'
-              version = "11070";
+              version = "11229";
               src = pkgs.fetchFromGitHub {
                 owner = "ggml-org";
                 repo = "llama.cpp";
                 tag = "b${finalAttrs.version}";
-                hash = "sha256-F9qn8ut4IrodVyecnmdoWcYZO7bFEeD3FKYXJ0umXKw=";
+                hash = "sha256-oluilPbkMjFDJOcBD6vogstx+5d8aNckBpWKSdMcT/M=";
                 leaveDotGit = true;
                 postFetch = ''
                   git -C "$out" rev-parse --short HEAD > $out/COMMIT
