@@ -318,6 +318,12 @@
           pi-llama
           sandboxed-ai
           ;
+        # The e2e suite runs the working-tree sandbox.sh, whose pi command
+        # loads only pi-llama itself.  Expose the same unbundled executable
+        # used by the installed wrapper; the `pi` output above carries the
+        # dotfiles plugin set and can fail independently when one of those
+        # unrelated plugins detects an incompatible upstream change.
+        pi-coding-agent = pkgs.pi-coding-agent;
         default = sandboxed-ai;
       };
 
