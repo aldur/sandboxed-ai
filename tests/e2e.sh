@@ -123,7 +123,10 @@ MLX_SERVER="$(flake_bin mlx-lm mlx_lm.server MLX_SERVER)"
 MLX_VLM_SERVER="$(flake_bin mlx-vlm mlx_vlm.server MLX_VLM_SERVER)"
 MTPLX="$(flake_bin mtplx mtplx MTPLX)"
 LLM="$(flake_bin llm llm LLM)"
-PI="$(flake_bin pi pi PI)"
+# Match the raw executable in sandboxed-ai's PATH. cmd_pi loads the pinned
+# pi-llama plugin explicitly; the separate `pi` flake output is a dotfiles
+# bundle with additional plugins that are outside this suite's scope.
+PI="$(flake_bin pi-coding-agent pi PI)"
 export LLAMA_SERVER LLAMA_BENCH MLX_SERVER MLX_VLM_SERVER MTPLX LLM PI
 if [[ -z "${PI_LLAMA_DIR:-}" ]] && command -v nix >/dev/null; then
   PI_LLAMA_DIR="$(nix build --no-link --print-out-paths "$ROOT#pi-llama" 2>/dev/null)" || PI_LLAMA_DIR=""
