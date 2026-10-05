@@ -4,6 +4,8 @@
 # Layout: constants → sandbox helpers → Hugging Face downloads → model
 # resolution (GGUF, MLX) → one cmd_* per subcommand, each ending in
 # `exec env -i … sandbox-exec` with every grant spelled out → dispatch.
+# --log tees output on the host; run.sb denies the log directory after each
+# tool's full profile, including when broader grants contain that directory.
 # The environment is an allowlist, not an inheritance: see sandbox_env.
 #
 # Subcommand → seatbelt profile (all import common.sb; the servers also
@@ -103,6 +105,7 @@ info() { printf '  %-14s %s\n' "$1" "$2"; }
 # sandbox-linux.sh). It uses die, info, MODELS_DIR and hf_curl from this
 # file.
 . "$SCRIPT_DIR/hf.sh"
+. "$SCRIPT_DIR/logging.sh"
 
 # ── Sandboxed fetch ───────────────────────────────────────
 # hf.sh reaches Hugging Face only through this function: curl inside its
@@ -158,13 +161,19 @@ hf_curl() {
     -D CURL="$HF_CURL_BIN" \
     -D MODELS_DIR="$MODELS_DIR" \
     -D CA_FILE="$HF_CA_FILE" \
-    -f "$PROFILES_DIR/hf-fetch.sb" \
+    -D TOOL_SB="$PROFILES_DIR/hf-fetch.sb" \
+    -D LOG_DIR="$(canon "$STATE_DIR")/logs" \
+    -f "$PROFILES_DIR/run.sb" \
     "$HF_CURL_BIN" -q "${HF_CURL_OPTS[@]}" --cacert "$HF_CA_FILE" "$@"
 }
 
 usage() {
   cat >&2 <<EOF
-Usage: $PROG <command> [options]
+Usage: $PROG [--log] <command> [options]
+
+Logging (before the command):
+  --log                 Save stdout/stderr under $STATE_DIR/logs and keep
+                        displaying output. For pi, use non-interactive -p.
 
 Commands:
   llama-server  Start the llama-server (sandboxed)
@@ -451,7 +460,8 @@ select_net() {
 # os.getcwd() at import) anywhere else. That directory is what tmux reports
 # as the pane's path while the tool runs. Each ends in `exec sandbox-exec` with every grant
 # spelled out at the call site — keep it that way: the full parameter set of
-# every sandbox must stay auditable where it is used. The -D blocks share a
+# every sandbox must stay auditable where it is used. run.sb imports the
+# selected TOOL_SB, then denies LOG_DIR after all its grants. The -D blocks share a
 # fixed order: COMMON_SB, SERVER_SB/CLIENT_SB, NET_*, PKG_STORE,
 # DARWIN_USER_*, per-command params, -f, argv.
 
@@ -762,7 +772,9 @@ cmd_llama() {
     -D CHAT_TEMPLATE_FILE="${template_path:-/dev/null}" \
     -D CACHE_DIR="$CACHE_DIR" \
     -D TMPDIR="$TMPDIR" \
-    -f "$PROFILES_DIR/llama-server.sb" \
+    -D TOOL_SB="$PROFILES_DIR/llama-server.sb" \
+    -D LOG_DIR="$(canon "$STATE_DIR")/logs" \
+    -f "$PROFILES_DIR/run.sb" \
     "$llama_server" "${server_args[@]}" "${extra_args[@]}"
 }
 
@@ -852,7 +864,9 @@ cmd_bench() {
     -D MODEL_DIR="$model_dir" \
     -D CACHE_DIR="$CACHE_DIR" \
     -D TMPDIR="$TMPDIR" \
-    -f "$PROFILES_DIR/llama-bench.sb" \
+    -D TOOL_SB="$PROFILES_DIR/llama-bench.sb" \
+    -D LOG_DIR="$(canon "$STATE_DIR")/logs" \
+    -f "$PROFILES_DIR/run.sb" \
     "$llama_bench" "${bench_args[@]}" "${extra_args[@]}"
 }
 
@@ -1049,7 +1063,9 @@ cmd_mlx() {
     -D MODEL_DIR="$model_dir" \
     -D CACHE_DIR="$CACHE_DIR" \
     -D TMPDIR="$TMPDIR" \
-    -f "$PROFILES_DIR/mlx-server.sb" \
+    -D TOOL_SB="$PROFILES_DIR/mlx-server.sb" \
+    -D LOG_DIR="$(canon "$STATE_DIR")/logs" \
+    -f "$PROFILES_DIR/run.sb" \
     "$mlx_server" "${server_args[@]}" "${extra_args[@]}"
 }
 
@@ -1282,7 +1298,9 @@ cmd_mtplx() {
     -D CACHE_DIR="$CACHE_DIR" \
     -D VLLM_METAL_CACHE="$VLLM_METAL_CACHE" \
     -D TMPDIR="$TMPDIR" \
-    -f "$PROFILES_DIR/mtplx.sb" \
+    -D TOOL_SB="$PROFILES_DIR/mtplx.sb" \
+    -D LOG_DIR="$(canon "$STATE_DIR")/logs" \
+    -f "$PROFILES_DIR/run.sb" \
     "$mtplx_bin" "${server_args[@]}" "${extra_args[@]}"
 }
 
@@ -1351,7 +1369,9 @@ cmd_pi() {
     -D TTY_DEV="$TTY_DEV" \
     -D TMPDIR="$TMPDIR" \
     -D NET_ADDR="localhost:$PORT" \
-    -f "$PROFILES_DIR/pi.sb" \
+    -D TOOL_SB="$PROFILES_DIR/pi.sb" \
+    -D LOG_DIR="$(canon "$STATE_DIR")/logs" \
+    -f "$PROFILES_DIR/run.sb" \
     "$pi_bin" -e "$plugin" "${ARGS[@]}"
 }
 
@@ -1410,15 +1430,31 @@ cmd_llm() {
     -D TMPDIR="$TMPDIR" \
     -D TTY_DEV="$TTY_DEV" \
     -D NET_ADDR="localhost:$PORT" \
-    -f "$PROFILES_DIR/llm.sb" \
+    -D TOOL_SB="$PROFILES_DIR/llm.sb" \
+    -D LOG_DIR="$(canon "$STATE_DIR")/logs" \
+    -f "$PROFILES_DIR/run.sb" \
     "$llm_bin" "$@"
 }
 
 # ── Main ──────────────────────────────────────────────────
 [[ $# -ge 1 ]] || usage
 
+# Only pipes cross into seatbelt; resolve_stdio grants no log file paths.
+log_enabled=0
+if [[ "$1" == --log ]]; then
+  log_enabled=1
+  shift
+fi
+[[ $# -ge 1 ]] || usage
 cmd="$1"
 shift
+if ((log_enabled)); then
+  case "$cmd" in
+  llama-server | llama-bench | mlx-server | mtplx | pi | llm)
+    start_logging "$cmd"
+    ;;
+  esac
+fi
 case "$cmd" in
 llama-server) cmd_llama "$@" ;;
 llama-bench) cmd_bench "$@" ;;

@@ -156,13 +156,15 @@ pi_sh() {
     -D HOME_PARENT="$(dirname "$HOME")" \
     -D STDOUT_PATH=/dev/null \
     -D STDERR_PATH=/dev/null \
-    -D WORKSPACE="$SCRATCH/ws" \
+    -D WORKSPACE="${PROBE_WORKSPACE:-$SCRATCH/ws}" \
     -D PI_DIR="$STATE_DIR/pi" \
     -D PI_LLAMA_DIR="$STATE_DIR/pi" \
     -D TMPDIR="$STATE_DIR/tmp/pi" \
     -D TTY_DEV="${PROBE_TTY:-/dev/null}" \
     -D NET_ADDR="localhost:$PORT" \
-    -f "$ROOT/profiles/pi.sb" /bin/sh -c "$1" 2>/dev/null
+    -D TOOL_SB="$ROOT/profiles/pi.sb" \
+    -D LOG_DIR="$(realpath "$STATE_DIR")/logs" \
+    -f "$ROOT/profiles/run.sb" /bin/sh -c "$1" 2>/dev/null
 }
 
 # ── Preflight ─────────────────────────────────────────────
@@ -175,27 +177,57 @@ fi
 echo "# models: $TEST_GGUF_MODEL / $TEST_MLX_MODEL"
 echo "# work:   $WORK"
 
-# ── llama-bench: redirected output stays valid JSON ───────
+# ── llama-bench: logged + redirected output stays valid JSON ───────
 if [[ -n "$PY" && -n "$LLAMA_BENCH" ]]; then
-  if "$SANDBOX" llama-bench --model "$TEST_GGUF_MODEL" \
+  if "$SANDBOX" --log llama-bench --model "$TEST_GGUF_MODEL" \
     -ngl 99 -fa on -p 0 -n 8 -d 32 -r 1 -o json \
     >"$WORK/bench.json" 2>"$WORK/bench.log" &&
-    "$PY" - "$WORK/bench.json" <<'PYEOF'
-import json, sys
+    "$PY" - "$WORK/bench.json" "$WORK/bench.log" <<'PYEOF'
+import json, pathlib, sys, time
 with open(sys.argv[1]) as f:
     rows = json.load(f)
 assert len(rows) == 1
 row = rows[0]
 assert (row['n_prompt'], row['n_gen'], row['n_depth']) == (0, 8, 32)
 assert len(row['samples_ns']) == 1 and row['samples_ns'][0] > 0
+# The tees can finish draining just after the benchmark exits.
+for _ in range(100):
+    stderr = pathlib.Path(sys.argv[2]).read_bytes()
+    run = pathlib.Path(next(line.split(None, 1)[1].decode() for line in stderr.splitlines()
+                            if line.startswith(b'  Logs ')))
+    if ((run / 'stdout.log').exists() and (run / 'stderr.log').exists()
+            and (run / 'stdout.log').read_bytes() == pathlib.Path(sys.argv[1]).read_bytes()
+            and (run / 'stderr.log').read_bytes() == stderr.partition(b'\n')[2]):
+        break
+    time.sleep(0.02)
+else:
+    raise AssertionError('saved output differs from forwarded output')
+assert run.stat().st_mode & 0o777 == 0o700
+assert all(path.stat().st_mode & 0o777 == 0o600 for path in run.iterdir())
 PYEOF
   then
-    ok "llama-bench returns valid JSON with the requested depth"
+    ok "logged llama-bench returns valid JSON and saves matching private output"
   else
-    fail "llama-bench returns valid JSON with the requested depth" "$WORK/bench.log"
+    fail "logged llama-bench returns valid JSON and saves matching private output" "$WORK/bench.log"
   fi
 else
   skip "llama-bench JSON" "python or llama-bench unavailable"
+fi
+
+# The log files exist before pi runs. Even a client permitted to spawn
+# shells must not read, truncate, append to, or remove earlier output.
+if [[ -f "$WORK/bench.log" ]]; then
+  logged_run="$(sed -n 's/^  Logs  *//p' "$WORK/bench.log" | head -1)"
+  saved_log="$logged_run/stdout.log"
+  if [[ -n "$logged_run" && -f "$saved_log" ]]; then
+    # Deliberately grant the ancestor as a workspace in this direct-profile
+    # probe, bypassing the launcher's overlap check to test the final deny.
+    if PROBE_WORKSPACE="$STATE_DIR" pi_sh "cat '$saved_log' || : > '$saved_log' || : >> '$saved_log' || rm '$saved_log'"; then
+      fail "probe: saved logs remain protected even with an ancestor grant"
+    else
+      ok "probe: saved logs remain protected even with an ancestor grant"
+    fi
+  fi
 fi
 
 # ── llama-server: TCP ─────────────────────────────────────
