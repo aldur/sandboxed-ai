@@ -12,6 +12,7 @@
 #   TEST_MLX_MODEL  (default mlx-community/SmolLM-135M-Instruct-4bit)
 #   TEST_MTPLX_MODEL (no default: the MTPLX catalog has no tiny model, so
 #                     the mtplx test is opt-in and skips when unset)
+#   TEST_VLLM_MODEL (default mlx-community/Qwen3-0.6B-4bit)
 #
 # Generation asserts on transport (HTTP 200, a completion comes back), not
 # on model output: the 135M test models are too small to follow
@@ -122,12 +123,14 @@ LLAMA_BENCH="$(flake_bin llama-cpp llama-bench LLAMA_BENCH)"
 MLX_SERVER="$(flake_bin mlx-lm mlx_lm.server MLX_SERVER)"
 MLX_VLM_SERVER="$(flake_bin mlx-vlm mlx_vlm.server MLX_VLM_SERVER)"
 MTPLX="$(flake_bin mtplx mtplx MTPLX)"
+VLLM="$(flake_bin vllm vllm VLLM)"
 LLM="$(flake_bin llm llm LLM)"
 # Match the raw executable in sandboxed-ai's PATH. cmd_pi loads the pinned
 # pi-llama plugin explicitly; the separate `pi` flake output is a dotfiles
 # bundle with additional plugins that are outside this suite's scope.
 PI="$(flake_bin pi-coding-agent pi PI)"
 export LLAMA_SERVER LLAMA_BENCH MLX_SERVER MLX_VLM_SERVER MTPLX LLM PI
+export VLLM
 if [[ -z "${PI_LLAMA_DIR:-}" ]] && command -v nix >/dev/null; then
   PI_LLAMA_DIR="$(nix build --no-link --print-out-paths "$ROOT#pi-llama" 2>/dev/null)" || PI_LLAMA_DIR=""
   export PI_LLAMA_DIR
@@ -667,6 +670,17 @@ if [[ -n "$MLX_SERVER" ]] && mlx_patched; then
   stop_server
 else
   fail "mlx-server (unix socket): the resolved mlx-lm lacks the flake's unix-socket patch ($MLX_SERVER)"
+fi
+
+# ── vLLM: real Metal inference over TCP and UNIX sockets ──
+if [[ -n "$PY" && -n "$VLLM" ]]; then
+  if "$PY" "$ROOT/tests/vllm-inference.py" >"$WORK/vllm-inference.log" 2>&1; then
+    ok "vllm (tcp + unix socket) serves completions"
+  else
+    fail "vllm (tcp + unix socket) serves completions" "$WORK/vllm-inference.log"
+  fi
+else
+  skip "vllm (tcp + unix socket)" "install vllm-metal to test"
 fi
 
 # ── mtplx: capability contract (small model, no opt-in) ───

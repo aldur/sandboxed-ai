@@ -1,11 +1,13 @@
 name: Update pinned packages
 
 # Dependabot's nix ecosystem only tracks flake.lock inputs, so it can't bump
-# packages pinned by tag or rev inside flake.nix. nix-update does: it updates
+# packages pinned by tag or rev in Nix expressions. nix-update does: it updates
 # the version, the pinned tag/rev, the source hash, and any dependent hashes
 # (e.g. llama.cpp's npmDepsHash). Each package is bumped and verified in its
 # own matrix leg, then opened as its own PR, so one broken update doesn't
 # block the others.
+# vLLM's updater resolves the paired upstream wheels and their dependencies
+# together; independent version bumps would break Metal's ABI requirements.
 on:
   schedule:
     - cron: "0 6 * * 1" # Mondays 06:00 UTC, alongside the Dependabot run
@@ -33,6 +35,8 @@ jobs:
           - package: mtplx
             nix-update-args: --version=stable
             verify: nix build .#mtplx -L
+          - package: vllm
+            verify: nix build .#vllm -L
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -49,14 +53,27 @@ jobs:
           diagnostic-endpoint: ""
 
       - name: Bump ${{ matrix.package }} with nix-update
+        if: matrix.package != 'vllm'
         run: |
           nix run nixpkgs#nix-update -- \
             --flake \
             ${{ matrix.nix-update-args }} \
             ${{ matrix.package }}
 
+      - name: Update vLLM and Metal from upstream requirements
+        if: matrix.package == 'vllm'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: nix run .#update-vllm
+
       - name: Verify it builds
         run: ${{ matrix.verify }}
+
+      - name: Verify vLLM updater and sandboxed Metal inference
+        if: matrix.package == 'vllm'
+        run: |
+          nix develop .#vllm --command python3 tests/vllm-update.py
+          nix develop .#vllm --command python3 tests/vllm-inference.py
 
       - name: Capture changes
         id: diff
@@ -88,7 +105,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [llama-cpp, mtplx]
+        package: [llama-cpp, mtplx, vllm]
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -115,8 +132,10 @@ jobs:
           title: "flake: bump ${{ matrix.package }}"
           commit-message: "flake: bump ${{ matrix.package }}"
           body: |
-            Automated `${{ matrix.package }}` bump via `nix-update`.
+            Automated `${{ matrix.package }}` package update.
 
-            Updates the pinned version/rev and source hashes in `flake.nix`,
-            verified to build on the runner before opening this PR.
+            Updates source versions and hashes, verified by the package's
+            build and test steps before opening this PR. vLLM updates include
+            its paired Metal release and resolved dependencies, with TCP and
+            UNIX-socket inference tests on Apple Silicon.
           delete-branch: true

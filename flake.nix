@@ -64,6 +64,8 @@
 
       llm = pkgs.llm.withPlugins { llm-llama-server = true; };
 
+      vllm = import ./packages/vllm { inherit pkgs; };
+
       # MLX equivalent of llama-server: `mlx_lm.server` (ml-explore/mlx-lm)
       # speaks the same OpenAI-compatible HTTP API (/v1/chat/completions,
       # /v1/models, /health) on localhost.
@@ -297,6 +299,7 @@
                 mlx-lm
                 mlx-vlm
                 mtplx
+                vllm
                 pkgs.pi-coding-agent
               ]
             }
@@ -308,12 +311,26 @@
     in
     {
       packages.${system} = {
+        update-vllm = pkgs.writeShellApplication {
+          name = "update-vllm";
+          runtimeInputs = [
+            pkgs.git
+            pkgs.nix-prefetch-git
+            (pkgs.python312.withPackages (p: [
+              p.pip
+              p.packaging
+            ]))
+          ];
+          passthru.filelockVersion = pkgs.python312Packages.filelock.version;
+          text = ''python ${./packages/vllm/update.py} "$@"'';
+        };
         inherit
           llama-cpp
           llm
           mlx-lm
           mlx-vlm
           mtplx
+          vllm
           pi
           pi-llama
           sandboxed-ai
@@ -334,6 +351,15 @@
       # suite resolves the model toolchain from the flake, not from PATH).
       devShells.${system} = {
         default = pkgs.mkShell { packages = [ sandboxed-ai ]; };
+        # The update job tests vLLM independently of the other model servers.
+        vllm = pkgs.mkShell {
+          packages = [
+            vllm
+            pkgs.bash
+            pkgs.curl
+            (pkgs.python312.withPackages (p: [ p.packaging ]))
+          ];
+        };
         e2e = pkgs.mkShell {
           packages = [
             sandboxed-ai
