@@ -23,6 +23,7 @@ set -uo pipefail
 
 ROOT="$(CDPATH='' cd -P -- "$(dirname -- "$0")/.." && pwd)"
 SANDBOX="$ROOT/sandbox.sh"
+"$BASH" "$ROOT/tests/state.sh" || exit 1
 PORT=8080
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/sandboxed-ai"
 
@@ -209,6 +210,14 @@ PYEOF
     ok "logged llama-bench returns valid JSON and saves matching private output"
   else
     fail "logged llama-bench returns valid JSON and saves matching private output" "$WORK/bench.log"
+  fi
+  mkdir -p "$WORK/relocated-state"
+  ln -s "$(realpath "$STATE_DIR")" "$WORK/relocated-state/sandboxed-ai"
+  if XDG_STATE_HOME="$WORK/relocated-state" "$SANDBOX" llama-bench \
+    --model "$TEST_GGUF_MODEL" --help >"$WORK/state-link.log" 2>&1; then
+    ok "unlogged launcher accepts symlinked state"
+  else
+    fail "unlogged launcher accepts symlinked state" "$WORK/state-link.log"
   fi
 else
   skip "llama-bench JSON" "python or llama-bench unavailable"
@@ -572,8 +581,8 @@ fi
 stop_server
 
 # ── llama-server: UNIX socket ─────────────────────────────
-SOCK="$SCRATCH/llama.sock"
-start_server llama-sock llama-server --model "$TEST_GGUF_MODEL" --host "$SOCK"
+SOCK="$STATE_DIR/sockets/llama-server.sock"
+start_server llama-sock llama-server --model "$TEST_GGUF_MODEL" --socket
 if wait_http "--unix-socket $SOCK http://localhost/health" 180; then
   ok "llama-server (unix socket) becomes healthy"
   if chat_ok "--unix-socket $SOCK http://localhost/v1/chat/completions" "$WORK/llama-sock-chat.json"; then
@@ -591,6 +600,17 @@ if wait_http "--unix-socket $SOCK http://localhost/health" 180; then
     ok "llama-server (unix socket) is owner-only ($sock_mode)"
   else
     fail "llama-server (unix socket) is owner-only (got $sock_mode)"
+  fi
+  if [[ "$(ls -ld "$STATE_DIR/sockets" | awk '{print $1}')" == drwx------ && -O "$SOCK" ]]; then
+    ok "default socket directory is private and socket is owned by us"
+  else
+    fail "default socket directory is private and socket is owned by us"
+  fi
+  if "$SANDBOX" llama-server --socket --model "$TEST_GGUF_MODEL" --help >"$WORK/socket-in-use.log" 2>&1 ||
+    ! grep -q 'already served' "$WORK/socket-in-use.log"; then
+    fail "a second launch refuses to remove the live default socket" "$WORK/socket-in-use.log"
+  else
+    ok "a second launch refuses to remove the live default socket"
   fi
 else
   fail "llama-server (unix socket) becomes healthy" "$WORK/llama-sock.log"
@@ -677,8 +697,8 @@ mlx_patched() {
   grep -rq 'endswith(".sock")' "$site"/lib/python*/site-packages/mlx_lm/server.py 2>/dev/null
 }
 if [[ -n "$MLX_SERVER" ]] && mlx_patched; then
-  SOCK="$SCRATCH/mlx.sock"
-  start_server mlx-sock mlx-server --model "$TEST_MLX_MODEL" --host "$SOCK"
+  SOCK="$STATE_DIR/sockets/mlx-server.sock"
+  start_server mlx-sock mlx-server --model "$TEST_MLX_MODEL" --socket
   if wait_http "--unix-socket $SOCK http://localhost/v1/models" 180; then
     ok "mlx-server (unix socket) becomes healthy"
     if chat_ok "--unix-socket $SOCK http://localhost/v1/chat/completions" "$WORK/mlx-sock-chat.json"; then
@@ -916,8 +936,8 @@ PYEOF
   # UNIX socket, through the flake's mtplx-unix-socket.patch. A resolved
   # build without the patch reads the .sock host as a non-localhost bind
   # and exits demanding an API key — a loud failure, as it should be.
-  MTPLX_SOCK="$SCRATCH/mtplx.sock"
-  start_server mtplx-sock mtplx --model "$TEST_MTPLX_MODEL" --host "$MTPLX_SOCK"
+  MTPLX_SOCK="$STATE_DIR/sockets/mtplx.sock"
+  start_server mtplx-sock mtplx --model "$TEST_MTPLX_MODEL" --socket
   if wait_http "--unix-socket $MTPLX_SOCK http://localhost/health" 300; then
     ok "mtplx (unix socket) becomes healthy"
     if chat_ok "--unix-socket $MTPLX_SOCK http://localhost/v1/chat/completions" "$WORK/mtplx-sock-chat.json"; then

@@ -46,6 +46,8 @@ PROG="${SANDBOXED_AI_PROG:-${0##*/}}"
 # stays unexported; each subcommand exports it for its sandboxed process.)
 PORT=8080
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/sandboxed-ai"
+# Existing relocated state may be symlinked; seatbelt grants physical paths.
+STATE_DIR="$(realpath "$STATE_DIR" 2>/dev/null || printf '%s' "$STATE_DIR")"
 # Parent of the per-server cache dirs (Metal PSO cache, HF hub cache);
 # each server appends its own name. Sharing one would let either server
 # rewrite what the other loads on its next start — the same channel the
@@ -197,6 +199,7 @@ llama-server options:
                         list the repo's .jinja files. Pair with --jinja.
   --mmproj SPEC         Multimodal projector for vision models, same spec
                         grammar. Quant labels match only mmproj-*.gguf files.
+  --socket              Use a private socket at $STATE_DIR/sockets/llama-server.sock.
   --host ADDR           TCP address to bind (default 127.0.0.1), or a
                         UNIX domain socket when ADDR ends in .sock.
   --port PORT           TCP port to bind (default 8080).
@@ -215,6 +218,7 @@ mlx-server options:
                         (e.g. mlx-community/Qwen3-8B-4bit). Vision models
                         (config.json with a vision tower) are served with
                         mlx_vlm.server, text models with mlx_lm.server.
+  --socket              Use a private socket at $STATE_DIR/sockets/mlx-server.sock.
   --host ADDR           TCP address to bind (default 127.0.0.1), or a
                         UNIX domain socket when ADDR ends in .sock.
   --port PORT           TCP port to bind (default 8080).
@@ -228,6 +232,7 @@ mtplx options:
                         MLX model (e.g. Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed).
                         The full repo downloads host-side; the server then
                         runs with no network at all.
+  --socket              Use a private socket at $STATE_DIR/sockets/mtplx.sock.
   --host ADDR           TCP address to bind (default 127.0.0.1), or a
                         UNIX domain socket when ADDR ends in .sock.
   --port PORT           TCP port to bind (default 8080).
@@ -405,10 +410,10 @@ resolve_ca_file() {
 # the other's surface. The path must end in .sock (all three servers key
 # UNIX-socket mode off that suffix on --host) and is normalized here, to
 # absolute with symlinks resolved (seatbelt matches resolved paths).
-# True when some process holds $1 open, i.e. it is a live socket rather
-# than a leftover. Conservative: with no lsof, nothing is reported in use.
+# Check that an existing socket is stale before removing it; without lsof
+# we cannot safely make that decision.
 socket_in_use() {
-  [[ -x "$LSOF" ]] || return 1
+  [[ -x "$LSOF" ]] || die "cannot check an existing socket without $LSOF"
   [[ -n "$("$LSOF" -t -- "$1" 2>/dev/null)" ]]
 }
 
@@ -429,6 +434,7 @@ select_net() {
   # ${sock%/*} is empty for a path directly under / ("/x.sock").
   local dir="${sock%/*}"
   [[ -n "$dir" ]] || dir=/
+  [[ "$dir" != "$STATE_DIR/sockets" ]] || private_state_dir sockets
   mkdir -m 700 -p "$dir" # the profile grants only the socket path itself
 
   # Resolve symlinks: on macOS /tmp really is /private/tmp, and seatbelt
@@ -443,8 +449,8 @@ select_net() {
   # a fat-fingered --host /opt/homebrew/var/run/mysqld/mysqld.sock must
   # not take out a live database.
   if [[ -e "$sock" || -L "$sock" ]]; then
-    [[ -S "$sock" ]] ||
-      die "socket path exists and is not a socket: $sock"
+    [[ ! -L "$sock" && -S "$sock" && -O "$sock" ]] ||
+      die "socket path must be a socket owned by you, not a symlink: $sock"
     ! socket_in_use "$sock" ||
       die "socket path is already served by another process: $sock"
     rm -f "$sock"
@@ -621,6 +627,11 @@ cmd_llama() {
       MMPROJ="$2"
       shift 2
       ;;
+    --socket)
+      socket="$STATE_DIR/sockets/llama-server.sock"
+      tcp_host=""
+      shift
+      ;;
     --host | --host=*)
       # Same rule the servers use: a path ending in .sock means "serve on
       # that unix socket", anything else is a TCP address.
@@ -635,8 +646,10 @@ cmd_llama() {
       fi
       if [[ "$host_arg" == *.sock ]]; then
         socket="$host_arg"
+        tcp_host=""
       else
         tcp_host="$host_arg"
+        socket=""
       fi
       ;;
     --port | --port=*)
@@ -883,6 +896,11 @@ cmd_mlx() {
       MODEL="$2"
       shift 2
       ;;
+    --socket)
+      socket="$STATE_DIR/sockets/mlx-server.sock"
+      tcp_host=""
+      shift
+      ;;
     --host | --host=*)
       # Same as in cmd_llama: .sock means a unix socket, otherwise TCP.
       host_arg="${1#--host}"
@@ -896,8 +914,10 @@ cmd_mlx() {
       fi
       if [[ "$host_arg" == *.sock ]]; then
         socket="$host_arg"
+        tcp_host=""
       else
         tcp_host="$host_arg"
+        socket=""
       fi
       ;;
     --port | --port=*)
@@ -1106,6 +1126,11 @@ cmd_mtplx() {
       MODEL="$2"
       shift 2
       ;;
+    --socket)
+      socket="$STATE_DIR/sockets/mtplx.sock"
+      tcp_host=""
+      shift
+      ;;
     --host | --host=*)
       # Same as in cmd_llama: .sock means a unix socket, otherwise TCP.
       host_arg="${1#--host}"
@@ -1119,8 +1144,10 @@ cmd_mtplx() {
       fi
       if [[ "$host_arg" == *.sock ]]; then
         socket="$host_arg"
+        tcp_host=""
       else
         tcp_host="$host_arg"
+        socket=""
       fi
       ;;
     --port | --port=*)
@@ -1448,13 +1475,12 @@ fi
 [[ $# -ge 1 ]] || usage
 cmd="$1"
 shift
-if ((log_enabled)); then
-  case "$cmd" in
-  llama-server | llama-bench | mlx-server | mtplx | pi | llm)
-    start_logging "$cmd"
-    ;;
-  esac
-fi
+case "$cmd" in
+llama-server | llama-bench | mlx-server | mtplx | pi | llm)
+  private_state_dir
+  if ((log_enabled)); then start_logging "$cmd"; fi
+  ;;
+esac
 case "$cmd" in
 llama-server) cmd_llama "$@" ;;
 llama-bench) cmd_bench "$@" ;;

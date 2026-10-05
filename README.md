@@ -109,6 +109,18 @@ Use `--log` to save stdout and stderr while still displaying them:
 ./sandbox.sh --log llama-server --model /path/to/model.gguf
 ```
 
+## Sockets
+
+Use `--socket` with `llama-server`, `mlx-server`, or `mtplx` to serve on a
+private UNIX socket:
+
+```bash
+./sandbox.sh --log llama-server --socket --model /path/to/model.gguf
+curl --unix-socket ~/.local/state/sandboxed-ai/sockets/llama-server.sock http://localhost/health
+```
+
+Use `--host /path/to/custom.sock` for a custom socket location.
+
 ## Usage
 
 ```bash
@@ -140,6 +152,7 @@ llama-server options:
                         list the repo's .jinja files. Pair with --jinja.
   --mmproj SPEC         Multimodal projector for vision models, same spec
                         grammar. Quant labels match only mmproj-*.gguf files.
+  --socket              Use a private socket at $STATE_DIR/sockets/llama-server.sock.
   --host ADDR           TCP address to bind (default 127.0.0.1), or a
                         UNIX domain socket when ADDR ends in .sock.
   --port PORT           TCP port to bind (default 8080).
@@ -158,6 +171,7 @@ mlx-server options:
                         (e.g. mlx-community/Qwen3-8B-4bit). Vision models
                         (config.json with a vision tower) are served with
                         mlx_vlm.server, text models with mlx_lm.server.
+  --socket              Use a private socket at $STATE_DIR/sockets/mlx-server.sock.
   --host ADDR           TCP address to bind (default 127.0.0.1), or a
                         UNIX domain socket when ADDR ends in .sock.
   --port PORT           TCP port to bind (default 8080).
@@ -171,6 +185,7 @@ mtplx options:
                         MLX model (e.g. Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed).
                         The full repo downloads host-side; the server then
                         runs with no network at all.
+  --socket              Use a private socket at $STATE_DIR/sockets/mtplx.sock.
   --host ADDR           TCP address to bind (default 127.0.0.1), or a
                         UNIX domain socket when ADDR ends in .sock.
   --port PORT           TCP port to bind (default 8080).
