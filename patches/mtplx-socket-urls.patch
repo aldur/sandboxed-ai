@@ -31,6 +31,25 @@
      raw = _unbracket_host(host)
      display = "[::]" if raw == "::" else (_clean_host(host) or "127.0.0.1")
      label = f"{display}:{int(port)}"
+--- a/mtplx/commands/public.py
++++ b/mtplx/commands/public.py
+@@ -152,6 +152,7 @@
+ from mtplx.server_urls import (
+     bind_label,
+     connect_host_for_bind,
++    is_unix_socket_bind,
+     is_wildcard_bind,
+     local_url_for_bind,
+     network_url_for_bind,
+@@ -9010,4 +9011,8 @@
+ def _port_is_busy(host: str, port: int) -> bool:
++    # Socket paths are not DNS names. The launcher checks for a live
++    # socket before starting us; there is no TCP port to probe here.
++    if is_unix_socket_bind(host):
++        return False
+     try:
+         with socket.create_connection(
+             (_connect_host_for_bind(host), int(port)), timeout=0.2
 --- a/mtplx/server/openai.py
 +++ b/mtplx/server/openai.py
 @@ -196,6 +196,7 @@

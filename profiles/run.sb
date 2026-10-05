@@ -1,0 +1,7 @@
+; vim:ft=scheme
+;; Keep this deny after the complete tool profile: a caller can point a
+;; model or package-store grant at an ancestor of the saved logs. Seatbelt
+;; uses the last matching rule, so no earlier grant may expose them.
+(import (param "TOOL_SB"))
+(deny file-read* file-write*
+  (subpath (param "LOG_DIR")))

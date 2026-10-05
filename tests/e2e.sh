@@ -23,6 +23,7 @@ set -uo pipefail
 
 ROOT="$(CDPATH='' cd -P -- "$(dirname -- "$0")/.." && pwd)"
 SANDBOX="$ROOT/sandbox.sh"
+"$BASH" "$ROOT/tests/state.sh" || exit 1
 PORT=8080
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/sandboxed-ai"
 
@@ -50,6 +51,7 @@ skip() { printf 'skip - %s (%s)\n' "$1" "$2"; SKIP=$((SKIP + 1)); }
 # tracked PID is ever killed — never pkill by name, the machine may run
 # real servers.
 SERVER_PID=""
+MTPLX_SOCKET_STATE=""
 start_server() { # $1 log-name, rest: sandbox.sh args
   # Stop the tracked server first. A second server on the same port dies
   # at bind, while wait_http keeps getting 200s from the orphaned first.
@@ -68,6 +70,7 @@ stop_server() {
 cleanup() {
   stop_server
   rm -rf "$WORK" "$SCRATCH"
+  [[ -z "$MTPLX_SOCKET_STATE" ]] || rm -rf "$MTPLX_SOCKET_STATE"
 }
 trap cleanup EXIT
 
@@ -156,13 +159,15 @@ pi_sh() {
     -D HOME_PARENT="$(dirname "$HOME")" \
     -D STDOUT_PATH=/dev/null \
     -D STDERR_PATH=/dev/null \
-    -D WORKSPACE="$SCRATCH/ws" \
+    -D WORKSPACE="${PROBE_WORKSPACE:-$SCRATCH/ws}" \
     -D PI_DIR="$STATE_DIR/pi" \
     -D PI_LLAMA_DIR="$STATE_DIR/pi" \
     -D TMPDIR="$STATE_DIR/tmp/pi" \
     -D TTY_DEV="${PROBE_TTY:-/dev/null}" \
     -D NET_ADDR="localhost:$PORT" \
-    -f "$ROOT/profiles/pi.sb" /bin/sh -c "$1" 2>/dev/null
+    -D TOOL_SB="$ROOT/profiles/pi.sb" \
+    -D LOG_DIR="$(realpath "$STATE_DIR")/logs" \
+    -f "$ROOT/profiles/run.sb" /bin/sh -c "$1" 2>/dev/null
 }
 
 # ── Preflight ─────────────────────────────────────────────
@@ -175,27 +180,65 @@ fi
 echo "# models: $TEST_GGUF_MODEL / $TEST_MLX_MODEL"
 echo "# work:   $WORK"
 
-# ── llama-bench: redirected output stays valid JSON ───────
+# ── llama-bench: logged + redirected output stays valid JSON ───────
 if [[ -n "$PY" && -n "$LLAMA_BENCH" ]]; then
-  if "$SANDBOX" llama-bench --model "$TEST_GGUF_MODEL" \
+  if "$SANDBOX" --log llama-bench --model "$TEST_GGUF_MODEL" \
     -ngl 99 -fa on -p 0 -n 8 -d 32 -r 1 -o json \
     >"$WORK/bench.json" 2>"$WORK/bench.log" &&
-    "$PY" - "$WORK/bench.json" <<'PYEOF'
-import json, sys
+    "$PY" - "$WORK/bench.json" "$WORK/bench.log" <<'PYEOF'
+import json, pathlib, sys, time
 with open(sys.argv[1]) as f:
     rows = json.load(f)
 assert len(rows) == 1
 row = rows[0]
 assert (row['n_prompt'], row['n_gen'], row['n_depth']) == (0, 8, 32)
 assert len(row['samples_ns']) == 1 and row['samples_ns'][0] > 0
+# The tees can finish draining just after the benchmark exits.
+for _ in range(100):
+    stderr = pathlib.Path(sys.argv[2]).read_bytes()
+    run = pathlib.Path(next(line.split(None, 1)[1].decode() for line in stderr.splitlines()
+                            if line.startswith(b'  Logs ')))
+    if ((run / 'stdout.log').exists() and (run / 'stderr.log').exists()
+            and (run / 'stdout.log').read_bytes() == pathlib.Path(sys.argv[1]).read_bytes()
+            and (run / 'stderr.log').read_bytes() == stderr.partition(b'\n')[2]):
+        break
+    time.sleep(0.02)
+else:
+    raise AssertionError('saved output differs from forwarded output')
+assert run.stat().st_mode & 0o777 == 0o700
+assert all(path.stat().st_mode & 0o777 == 0o600 for path in run.iterdir())
 PYEOF
   then
-    ok "llama-bench returns valid JSON with the requested depth"
+    ok "logged llama-bench returns valid JSON and saves matching private output"
   else
-    fail "llama-bench returns valid JSON with the requested depth" "$WORK/bench.log"
+    fail "logged llama-bench returns valid JSON and saves matching private output" "$WORK/bench.log"
+  fi
+  mkdir -p "$WORK/relocated-state"
+  ln -s "$(realpath "$STATE_DIR")" "$WORK/relocated-state/sandboxed-ai"
+  if XDG_STATE_HOME="$WORK/relocated-state" "$SANDBOX" llama-bench \
+    --model "$TEST_GGUF_MODEL" --help >"$WORK/state-link.log" 2>&1; then
+    ok "unlogged launcher accepts symlinked state"
+  else
+    fail "unlogged launcher accepts symlinked state" "$WORK/state-link.log"
   fi
 else
   skip "llama-bench JSON" "python or llama-bench unavailable"
+fi
+
+# The log files exist before pi runs. Even a client permitted to spawn
+# shells must not read, truncate, append to, or remove earlier output.
+if [[ -f "$WORK/bench.log" ]]; then
+  logged_run="$(sed -n 's/^  Logs  *//p' "$WORK/bench.log" | head -1)"
+  saved_log="$logged_run/stdout.log"
+  if [[ -n "$logged_run" && -f "$saved_log" ]]; then
+    # Deliberately grant the ancestor as a workspace in this direct-profile
+    # probe, bypassing the launcher's overlap check to test the final deny.
+    if PROBE_WORKSPACE="$STATE_DIR" pi_sh "cat '$saved_log' || : > '$saved_log' || : >> '$saved_log' || rm '$saved_log'"; then
+      fail "probe: saved logs remain protected even with an ancestor grant"
+    else
+      ok "probe: saved logs remain protected even with an ancestor grant"
+    fi
+  fi
 fi
 
 # ── llama-server: TCP ─────────────────────────────────────
@@ -540,8 +583,8 @@ fi
 stop_server
 
 # ── llama-server: UNIX socket ─────────────────────────────
-SOCK="$SCRATCH/llama.sock"
-start_server llama-sock llama-server --model "$TEST_GGUF_MODEL" --host "$SOCK"
+SOCK="$STATE_DIR/sockets/llama-server.sock"
+start_server llama-sock llama-server --model "$TEST_GGUF_MODEL" --socket
 if wait_http "--unix-socket $SOCK http://localhost/health" 180; then
   ok "llama-server (unix socket) becomes healthy"
   if chat_ok "--unix-socket $SOCK http://localhost/v1/chat/completions" "$WORK/llama-sock-chat.json"; then
@@ -559,6 +602,17 @@ if wait_http "--unix-socket $SOCK http://localhost/health" 180; then
     ok "llama-server (unix socket) is owner-only ($sock_mode)"
   else
     fail "llama-server (unix socket) is owner-only (got $sock_mode)"
+  fi
+  if [[ "$(ls -ld "$STATE_DIR/sockets" | awk '{print $1}')" == drwx------ && -O "$SOCK" ]]; then
+    ok "default socket directory is private and socket is owned by us"
+  else
+    fail "default socket directory is private and socket is owned by us"
+  fi
+  if "$SANDBOX" llama-server --socket --model "$TEST_GGUF_MODEL" --help >"$WORK/socket-in-use.log" 2>&1 ||
+    ! grep -q 'already served' "$WORK/socket-in-use.log"; then
+    fail "a second launch refuses to remove the live default socket" "$WORK/socket-in-use.log"
+  else
+    ok "a second launch refuses to remove the live default socket"
   fi
 else
   fail "llama-server (unix socket) becomes healthy" "$WORK/llama-sock.log"
@@ -645,8 +699,8 @@ mlx_patched() {
   grep -rq 'endswith(".sock")' "$site"/lib/python*/site-packages/mlx_lm/server.py 2>/dev/null
 }
 if [[ -n "$MLX_SERVER" ]] && mlx_patched; then
-  SOCK="$SCRATCH/mlx.sock"
-  start_server mlx-sock mlx-server --model "$TEST_MLX_MODEL" --host "$SOCK"
+  SOCK="$STATE_DIR/sockets/mlx-server.sock"
+  start_server mlx-sock mlx-server --model "$TEST_MLX_MODEL" --socket
   if wait_http "--unix-socket $SOCK http://localhost/v1/models" 180; then
     ok "mlx-server (unix socket) becomes healthy"
     if chat_ok "--unix-socket $SOCK http://localhost/v1/chat/completions" "$WORK/mlx-sock-chat.json"; then
@@ -712,6 +766,31 @@ if [[ -n "$MTPLX" ]]; then
     fi
   else
     fail "mtplx (capability run) becomes healthy" "$WORK/mtplx-cap.log"
+  fi
+  stop_server
+  # Use the small capability model for socket coverage too. A socket path
+  # longer than a DNS label catches accidental TCP hostname probes.
+  MTPLX_SOCKET_STATE="$(mktemp -d "$HOME/sandboxed-ai-mtplx-socket-XXXXXX")"
+  MTPLX_SOCK="$MTPLX_SOCKET_STATE/sandboxed-ai/sockets/mtplx.sock"
+  XDG_STATE_HOME="$MTPLX_SOCKET_STATE" \
+    SANDBOXED_AI_MODELS="$STATE_DIR/models" \
+    start_server mtplx-cap-sock --log mtplx --model "$TEST_MLX_MODEL" \
+      --host 127.0.0.1 --socket
+  if wait_http "--unix-socket $MTPLX_SOCK http://localhost/health" 300; then
+    ok "logged mtplx (unix socket) becomes healthy with a long socket path"
+    if chat_ok "--unix-socket $MTPLX_SOCK http://localhost/v1/chat/completions" "$WORK/mtplx-cap-sock-chat.json"; then
+      ok "logged mtplx (unix socket) serves a completion"
+    else
+      fail "logged mtplx (unix socket) serves a completion" "$WORK/mtplx-cap-sock-chat.json"
+    fi
+    if [[ "$(ls -ld "$MTPLX_SOCK" | awk '{print $1}')" == ?rw------- &&
+      "$(ls -ld "${MTPLX_SOCK%/*}" | awk '{print $1}')" == drwx------ ]]; then
+      ok "mtplx socket and its directory are owner-only"
+    else
+      fail "mtplx socket and its directory are owner-only"
+    fi
+  else
+    fail "logged mtplx (unix socket) becomes healthy with a long socket path" "$WORK/mtplx-cap-sock.log"
   fi
   stop_server
 else
@@ -884,8 +963,8 @@ PYEOF
   # UNIX socket, through the flake's mtplx-unix-socket.patch. A resolved
   # build without the patch reads the .sock host as a non-localhost bind
   # and exits demanding an API key — a loud failure, as it should be.
-  MTPLX_SOCK="$SCRATCH/mtplx.sock"
-  start_server mtplx-sock mtplx --model "$TEST_MTPLX_MODEL" --host "$MTPLX_SOCK"
+  MTPLX_SOCK="$STATE_DIR/sockets/mtplx.sock"
+  start_server mtplx-sock mtplx --model "$TEST_MTPLX_MODEL" --socket
   if wait_http "--unix-socket $MTPLX_SOCK http://localhost/health" 300; then
     ok "mtplx (unix socket) becomes healthy"
     if chat_ok "--unix-socket $MTPLX_SOCK http://localhost/v1/chat/completions" "$WORK/mtplx-sock-chat.json"; then
@@ -999,7 +1078,7 @@ printf 'important\n' >"$SCRATCH/notasocket.sock"
 if "$SANDBOX" llama-server --model "$TEST_GGUF_MODEL" --host "$SCRATCH/notasocket.sock" \
   >"$WORK/sock-file.log" 2>&1; then
   fail "socket: an existing non-socket file is refused" "$WORK/sock-file.log"
-elif grep -q 'exists and is not a socket' "$WORK/sock-file.log" &&
+elif grep -q 'socket path must be a socket owned by you' "$WORK/sock-file.log" &&
   [[ "$(cat "$SCRATCH/notasocket.sock")" == important ]]; then
   ok "socket: an existing non-socket file is refused (and left intact)"
 else
