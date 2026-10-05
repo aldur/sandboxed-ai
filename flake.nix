@@ -34,19 +34,19 @@
           (
             finalAttrs: old: {
               # Optionally: bump to a more recent version than nixpkgs'
-              version = "11229";
+              version = "11418";
               src = pkgs.fetchFromGitHub {
                 owner = "ggml-org";
                 repo = "llama.cpp";
                 tag = "b${finalAttrs.version}";
-                hash = "sha256-oluilPbkMjFDJOcBD6vogstx+5d8aNckBpWKSdMcT/M=";
+                hash = "sha256-0Svu/f1RC1RYglkXQiShqHo68iQTB9v59IDG+ZWUrzw=";
                 leaveDotGit = true;
                 postFetch = ''
                   git -C "$out" rev-parse --short HEAD > $out/COMMIT
                   find "$out" -name .git -print0 | xargs -0 rm -rf
                 '';
               };
-              npmDepsHash = "sha256-2Q7XhaLAArmviOLdQsNbYTfdyDE5pW9lR26cRHEVl9k=";
+              npmDepsHash = "sha256-a17M+L3nLdRnN6WMB6imPFmwqG2g8uv+gwN0XTAUrf8=";
               cmakeFlags =
                 builtins.filter (f: builtins.match "-D(GGML_NATIVE|BUILD_SHARED_LIBS).*" f == null) (
                   old.cmakeFlags or [ ]
@@ -147,11 +147,11 @@
       mtplx = mlxPython.pkgs.toPythonApplication (
         mlxPython.pkgs.buildPythonPackage rec {
           pname = "mtplx";
-          version = "2.12.0";
+          version = "2.12.2";
           pyproject = true;
           src = pkgs.fetchPypi {
             inherit pname version;
-            hash = "sha256-9R07otuqHKBG0Ub7OYBMBSCCS/Bz2rZifS+cpSws6ls=";
+            hash = "sha256-BRCNdhuPZ4vb77odMq8fr0T8nVr6Av9OVfbwbGzYhPA=";
           };
           # Serve on a UNIX domain socket when --host ends in .sock,
           # mirroring llama-server's convention (see sandbox.sh --host).
