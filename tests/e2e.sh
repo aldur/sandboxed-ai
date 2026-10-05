@@ -51,6 +51,7 @@ skip() { printf 'skip - %s (%s)\n' "$1" "$2"; SKIP=$((SKIP + 1)); }
 # tracked PID is ever killed — never pkill by name, the machine may run
 # real servers.
 SERVER_PID=""
+MTPLX_SOCKET_STATE=""
 start_server() { # $1 log-name, rest: sandbox.sh args
   # Stop the tracked server first. A second server on the same port dies
   # at bind, while wait_http keeps getting 200s from the orphaned first.
@@ -69,6 +70,7 @@ stop_server() {
 cleanup() {
   stop_server
   rm -rf "$WORK" "$SCRATCH"
+  [[ -z "$MTPLX_SOCKET_STATE" ]] || rm -rf "$MTPLX_SOCKET_STATE"
 }
 trap cleanup EXIT
 
@@ -766,6 +768,31 @@ if [[ -n "$MTPLX" ]]; then
     fail "mtplx (capability run) becomes healthy" "$WORK/mtplx-cap.log"
   fi
   stop_server
+  # Use the small capability model for socket coverage too. A socket path
+  # longer than a DNS label catches accidental TCP hostname probes.
+  MTPLX_SOCKET_STATE="$(mktemp -d "$HOME/sandboxed-ai-mtplx-socket-XXXXXX")"
+  MTPLX_SOCK="$MTPLX_SOCKET_STATE/sandboxed-ai/sockets/mtplx.sock"
+  XDG_STATE_HOME="$MTPLX_SOCKET_STATE" \
+    SANDBOXED_AI_MODELS="$STATE_DIR/models" \
+    start_server mtplx-cap-sock --log mtplx --model "$TEST_MLX_MODEL" \
+      --host 127.0.0.1 --socket
+  if wait_http "--unix-socket $MTPLX_SOCK http://localhost/health" 300; then
+    ok "logged mtplx (unix socket) becomes healthy with a long socket path"
+    if chat_ok "--unix-socket $MTPLX_SOCK http://localhost/v1/chat/completions" "$WORK/mtplx-cap-sock-chat.json"; then
+      ok "logged mtplx (unix socket) serves a completion"
+    else
+      fail "logged mtplx (unix socket) serves a completion" "$WORK/mtplx-cap-sock-chat.json"
+    fi
+    if [[ "$(ls -ld "$MTPLX_SOCK" | awk '{print $1}')" == ?rw------- &&
+      "$(ls -ld "${MTPLX_SOCK%/*}" | awk '{print $1}')" == drwx------ ]]; then
+      ok "mtplx socket and its directory are owner-only"
+    else
+      fail "mtplx socket and its directory are owner-only"
+    fi
+  else
+    fail "logged mtplx (unix socket) becomes healthy with a long socket path" "$WORK/mtplx-cap-sock.log"
+  fi
+  stop_server
 else
   skip "mtplx capability contract" "mtplx not available"
 fi
@@ -1051,7 +1078,7 @@ printf 'important\n' >"$SCRATCH/notasocket.sock"
 if "$SANDBOX" llama-server --model "$TEST_GGUF_MODEL" --host "$SCRATCH/notasocket.sock" \
   >"$WORK/sock-file.log" 2>&1; then
   fail "socket: an existing non-socket file is refused" "$WORK/sock-file.log"
-elif grep -q 'exists and is not a socket' "$WORK/sock-file.log" &&
+elif grep -q 'socket path must be a socket owned by you' "$WORK/sock-file.log" &&
   [[ "$(cat "$SCRATCH/notasocket.sock")" == important ]]; then
   ok "socket: an existing non-socket file is refused (and left intact)"
 else
