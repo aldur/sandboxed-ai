@@ -1,0 +1,5 @@
+; vim:ft=scheme
+;; TensorFold shares the MLX profile, including its deny on process-fork
+;; and outbound connections. An optional external draft is read-only too.
+(import (param "MLX_SB"))
+(allow file-read* (subpath (param "DRAFT_DIR")))

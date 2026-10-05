@@ -236,6 +236,151 @@
         }
       );
 
+      # TensorFold's image adapter needs newer Qwen vision modules than the
+      # standalone mlx-vlm server. Keep its Python dependency private so that
+      # server retains its tested version and patches.
+      tensorfold-mlx-vlm = mlxPython.pkgs.buildPythonPackage rec {
+        pname = "mlx-vlm";
+        version = "0.7.3";
+        pyproject = true;
+        src = pkgs.fetchPypi {
+          pname = "mlx_vlm";
+          inherit version;
+          hash = "sha256-i2VtwoDScsXosawDp7cvUlku7Y6YzBEuiNNrv5z3uCs=";
+        };
+        build-system = with mlxPython.pkgs; [
+          setuptools
+          wheel
+        ];
+        # TensorFold imports the vision tower, not mlx-vlm's audio pipeline.
+        # mlx-audio is used only by that pipeline's lazy imports; TensorFold
+        # itself supports neither audio input nor speech generation.
+        pythonRemoveDeps = [ "mlx-audio" ];
+        dependencies = with mlxPython.pkgs; [
+          mlx
+          transformers
+          jinja2
+          sentencepiece
+          miniaudio
+          tqdm
+          pillow
+          requests
+          llguidance
+          opencv-python
+          fastapi
+          python-multipart
+          starlette
+          uvicorn
+          websockets
+          numpy
+          torch
+          torchvision
+        ];
+        pythonImportsCheck = [ "mlx_vlm.models.qwen3_5.vision" ];
+      };
+
+      tensorfold-xgrammar = mlxPython.pkgs.buildPythonPackage rec {
+        pname = "xgrammar";
+        version = "0.2.8";
+        pyproject = true;
+        src = pkgs.fetchPypi {
+          inherit pname version;
+          hash = "sha256-gwVkb9KzGdbDAD9RoWZeVMu+nLoftja8QdC0ZDTMu4A=";
+        };
+        build-system = with mlxPython.pkgs; [
+          scikit-build-core
+          setuptools-scm
+          apache-tvm-ffi
+        ];
+        nativeBuildInputs = [
+          pkgs.cmake
+          pkgs.ninja
+        ];
+        dontUseCmakeConfigure = true;
+        dependencies = with mlxPython.pkgs; [
+          apache-tvm-ffi
+          numpy
+          pydantic
+          torch
+          transformers
+          typing-extensions
+        ];
+        pythonImportsCheck = [ "xgrammar" ];
+      };
+
+      # Match MLX's nanobind ABI, not the newest nanobind. Used only while
+      # building the SSD host-sync extension; no compiler runs at serving time.
+      tensorfold-nanobind = mlxPython.pkgs.nanobind.overridePythonAttrs (_: {
+        version = "2.15.0";
+        src = pkgs.fetchPypi {
+          pname = "nanobind";
+          version = "2.15.0";
+          hash = "sha256-PqzjejuM2t1TH8xhRSY5hbKYIUZxYdNP9yKwZEz0RbU=";
+        };
+      });
+
+      # All TensorFold serving extras: vision, grammar and SSD streaming.
+      # The upstream MLX constraints remain enforced against the shared wheel.
+      tensorfold = mlxPython.pkgs.toPythonApplication (
+        mlxPython.pkgs.buildPythonPackage {
+          pname = "tensorfold";
+          version = "0.5.0-unstable-2026-09-30";
+          pyproject = true;
+          src = pkgs.fetchFromGitHub {
+            owner = "ashhart";
+            repo = "TensorFold";
+            rev = "9cd52ab4daba68ddd09be89be8f23ad43175e821";
+            hash = "sha256-7KjSMvC1caW9VTAvh4FIgRGIDjxctjQMuy7cjYhSXa8=";
+          };
+          patches = [
+            ./patches/tensorfold-unix-socket.patch
+            # pi's llama-cpp plugin discovers context size through /props.
+            ./patches/tensorfold-props.patch
+            ./patches/tensorfold-prebuilt-ssd.patch
+          ];
+          build-system = [ mlxPython.pkgs.setuptools ];
+          nativeBuildInputs = [
+            pkgs.cmake
+            tensorfold-nanobind
+          ];
+          dontUseCmakeConfigure = true;
+          dependencies = with mlxPython.pkgs; [
+            mlx
+            mlxPython.pkgs.mlx-lm
+            numpy
+            huggingface-hub
+            pillow
+            transformers
+            tensorfold-mlx-vlm
+            tensorfold-xgrammar
+          ];
+          postInstall = ''
+            PYTHONPATH="$out/${mlxPython.sitePackages}:$PYTHONPATH" python - <<'PYBUILD'
+            from pathlib import Path
+            from tensorfold.streaming.build import SOURCE, _build
+            _build(SOURCE)
+            PYBUILD
+          '';
+          # Real inference needs Metal; tests/tensorfold-e2e.sh exercises it
+          # outside the Nix build sandbox, inside the runtime sandbox.
+          pythonImportsCheck = [
+            "tensorfold"
+            "tensorfold.cli"
+            "tensorfold.streaming.hostsync._hostsync"
+          ];
+        }
+      );
+
+      # Same Python import closure as the shipped CLI, plus the pinned
+      # upstream GLM fixture. This test executable runs through sandbox.sh.
+      tensorfold-ssd-check = pkgs.runCommand "tensorfold-ssd-check" { } ''
+        mkdir -p "$out/bin"
+        sed -n '1,/^import re$/p' ${tensorfold}/bin/.tensorfold-wrapped > "$out/bin/tensorfold-ssd-check"
+        echo "import sys; sys.path.insert(0, '${tensorfold.src}/tests')" >> "$out/bin/tensorfold-ssd-check"
+        cat ${./tests/tensorfold-ssd.py} >> "$out/bin/tensorfold-ssd-check"
+        chmod +x "$out/bin/tensorfold-ssd-check"
+      '';
+
       # `pi` bundled with the pinned huggingface/pi-llama llama.cpp plugin
       # (auto-loaded via `pi -e <store>/index.ts` — no `pi install`, no
       # network) and telemetry off. Packaged in aldur/dotfiles; through the
@@ -297,6 +442,7 @@
                 mlx-lm
                 mlx-vlm
                 mtplx
+                tensorfold
                 pkgs.pi-coding-agent
               ]
             }
@@ -314,6 +460,8 @@
           mlx-lm
           mlx-vlm
           mtplx
+          tensorfold
+          tensorfold-ssd-check
           pi
           pi-llama
           sandboxed-ai

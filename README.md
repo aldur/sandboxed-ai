@@ -5,6 +5,7 @@ This repository provides `sandbox-exec` profiles to run:
 1. [`llama-server`][1]
 1. [`mlx_lm.server`][5]
 1. [MTPLX][6]
+1. [TensorFold][7]
 1. [`pi`][4]
 1. [`simonw/llm`][3]
 
@@ -84,6 +85,54 @@ the weights read-only. It binds `127.0.0.1:8080` by default; `--host
 the fan-control helper that `tune` normally spawns, so tuning runs with a bit
 more timing noise.
 
+### TensorFold
+
+[TensorFold][7] serves supported MLX model families through OpenAI-compatible
+chat, completion, and Responses endpoints.
+
+```bash
+# The Nix wrapper includes TensorFold and its Metal-enabled dependencies.
+nix run . -- tensorfold --model Vontra/Qwen3.8-27B-MLX-4bit
+
+# Optional external draft model, downloaded and verified before sandboxing:
+nix run . -- tensorfold --model Vontra/Qwen3.8-27B-MLX-4bit \
+  --drafter z-lab/Qwen3.8-27B-DFlash2
+
+# UNIX socket (supported by a patch):
+nix run . -- tensorfold --model Vontra/Qwen3.8-27B-MLX-4bit \
+  --host /tmp/tensorfold.sock
+```
+
+The server binds `127.0.0.1:8080` by default. Models and optional drafters are
+read-only, outbound connections and subprocesses are denied. Conversation
+snapshots are stored in TensorFold's cache. Update checks are disabled. The
+`auto` drafter setting only sees this isolated cache; use `--drafter`
+explicitly to add an external draft model. Get the served model ID from
+`/v1/models`. The Nix build also provides `/props` and context metadata for the
+`pi` plugin.
+
+TensorFold supports specific architectures and quantization formats. The Nix
+package includes its vision, grammar, and SSD-streaming dependencies:
+
+- `--vision` enables image understanding for supported Qwen3.5/3.8 dense
+  checkpoints that include their vision weights. Send images as inline data
+  URLs; the sandbox blocks remote image downloads.
+- `response_format` enables JSON or JSON Schema constraints. `guided_regex`,
+  `guided_choice`, `guided_grammar`, and `structured_outputs` are also supported.
+- `--ssd-experts GIB` streams expert weights for supported GLM-5.3-Flash and
+  Qwen3.8 Flash Next checkpoints into a bounded GPU pool. The native extension
+  is built with Nix and loaded from the read-only package store. The server
+  needs no compiler or additional sandbox permissions. `--ple-on-ssd` supports
+  Flash Next's file-backed n-gram tables as well.
+
+```bash
+nix run . -- tensorfold --model mlx-community/Qwen3.5-9B-4bit --vision
+```
+
+`--context`, `--no-thinking`, `--no-drafts`, and other serving options pass
+through. Set `TENSORFOLD_MEMORY_LIMIT_GB` if the default memory budget cannot
+fit your model. TensorFold's upstream model and GPU restrictions still apply.
+
 ### `pi`
 
 ```bash
@@ -110,6 +159,7 @@ Commands:
   llama-server  Start the llama-server (sandboxed)
   llama-bench   Run llama-bench (sandboxed, no network)
   mlx-server    Start mlx_lm.server (sandboxed)
+  tensorfold    Start TensorFold (sandboxed)
   mtplx         Start the MTPLX server (sandboxed); `mtplx tune` runs its
                 draft-depth calibration (sandboxed, no network)
   pi            Start pi (pi-coding-agent) with the llama-cpp plugin (sandboxed)
@@ -151,6 +201,15 @@ mlx-server options:
   --port PORT           TCP port to bind (default 8080).
   All other flags are passed through to the server.
 
+tensorfold options:
+  --model SPEC          Local directory or HF repo of a supported MLX model.
+  --drafter SPEC        Local directory or HF repo; auto (default) or none.
+                        Both model and drafter download before sandboxing.
+  --host ADDR           TCP address (default 127.0.0.1), or a .sock path
+                        with the Nix build's UNIX-socket patch.
+  --port PORT           TCP port (default 8080).
+  All other flags are passed through to `tensorfold serve`.
+
 mtplx options:
   tune                  Leading word: run `mtplx tune` instead of serving.
                         Same sandbox, no network; the tuned draft depth
@@ -183,10 +242,23 @@ Environment:
   SANDBOXED_AI_PROG  Program name shown in this help (set by the Nix wrapper)
   MODEL              Model spec (overridden by --model)
   MMPROJ             Projector spec (overridden by --mmproj)
-  LLAMA_SERVER, LLAMA_BENCH, MLX_SERVER, MLX_VLM_SERVER, MTPLX, PI, LLM, CURL
+  LLAMA_SERVER, LLAMA_BENCH, MLX_SERVER, MLX_VLM_SERVER, MTPLX, TENSORFOLD, PI, LLM, CURL
                      Explicit binary paths (fallback: PATH lookup)
   PI_LLAMA_DIR       Dir holding the pi llama-cpp plugin's index.ts
                      (set by the Nix wrapper; required for the pi command)
+  MTPLX_SESSION_BANK_MAX_BYTES, MTPLX_SESSION_BANK_PER_SESSION_BYTES,
+  MTPLX_SESSION_BANK_MAX_ENTRIES
+                     mtplx session-cache budgets (wrapper defaults:
+                     8G total, 4G per session; the server's auto
+                     formula overcommits RAM on long contexts)
+  MTPLX_POSTCOMMIT_FOREGROUND_GRACE_S
+                     seconds the async KV commit can run before it
+                     yields to a queued request (wrapper default: 120,
+                     so agent loops keep their prompt cache)
+  MTPLX_SESSION_POSTCOMMIT_MODE, MTPLX_POSTCOMMIT_CROSS_SESSION_YIELD
+                     mtplx KV-commit policy overrides, passed through
+  TENSORFOLD_MEMORY_LIMIT_GB
+                     TensorFold process memory budget in GiB
   NIX_SSL_CERT_FILE  CA bundle granted read-only to the mlx sandbox
   LLAMA_API_KEY, OPENAI_API_KEY
                      Client API keys; local servers accept the "dummy" default
@@ -198,3 +270,4 @@ Environment:
 [4]: https://pi.dev/
 [5]: https://github.com/ml-explore/mlx-lm
 [6]: https://github.com/youssofal/MTPLX
+[7]: https://github.com/ashhart/TensorFold

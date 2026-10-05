@@ -12,6 +12,8 @@
 #   TEST_MLX_MODEL  (default mlx-community/SmolLM-135M-Instruct-4bit)
 #   TEST_MTPLX_MODEL (no default: the MTPLX catalog has no tiny model, so
 #                     the mtplx test is opt-in and skips when unset)
+#   TEST_TENSORFOLD_MODEL (no default: set a supported checkpoint to enable
+#                          TensorFold TCP + UNIX-socket inference tests)
 #
 # Generation asserts on transport (HTTP 200, a completion comes back), not
 # on model output: the 135M test models are too small to follow
@@ -905,6 +907,15 @@ PYEOF
   stop_server
 else
   skip "mtplx (tcp + unix socket)" "install mtplx and set TEST_MTPLX_MODEL to test"
+fi
+
+# TensorFold always checks sandboxed help; inference is opt-in because its
+# supported checkpoints do not include the tiny models used above.
+stop_server
+if "$ROOT/tests/tensorfold-e2e.sh"; then
+  ok "TensorFold sandbox checks"
+else
+  fail "TensorFold sandbox checks"
 fi
 
 # ── `set -e` does not swallow the run ─────────────────────

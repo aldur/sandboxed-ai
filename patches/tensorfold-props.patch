@@ -1,0 +1,24 @@
+--- a/src/tensorfold/server/http.py
++++ b/src/tensorfold/server/http.py
+@@ -105,6 +105,13 @@
+                     }
+                 )
+                 return
++            if route == "/props":
++                payload = {"default_generation_settings": {"n_ctx": app.context_window}}
++                template = getattr(app.tokenizer, "chat_template", None)
++                if isinstance(template, str):
++                    payload["chat_template"] = template
++                self._send_json(payload)
++                return
+             if route.endswith("/models") or route == "/models":
+                 self._send_json(
+                     {
+@@ -115,6 +122,7 @@
+                                 "object": "model",
+                                 "created": int(time.time()),
+                                 "owned_by": "tensorfold",
++                                "meta": {"n_ctx": app.context_window},
+                             }
+                             for model_id in app.model_ids
+                         ],
