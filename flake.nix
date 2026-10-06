@@ -129,6 +129,9 @@
           disabledTests = (old.disabledTests or [ ]) ++ [
             "test_gemma3_input_embeddings"
           ];
+          # nixpkgs marks 0.4.4 broken against mlx 0.32; the compatibility
+          # backport and test exclusion above address that in this build.
+          meta = (old.meta or { }) // { broken = false; };
         })
       );
 
