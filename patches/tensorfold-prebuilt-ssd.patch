@@ -1,0 +1,43 @@
+--- a/src/tensorfold/streaming/build.py
++++ b/src/tensorfold/streaming/build.py
+@@ -39,15 +39,11 @@
+
+ def load(cache: Path | None = None) -> Any:
+-    """The compiled ``_hostsync`` module, building it with cmake and nanobind when this MLX has none yet."""
++    """Load the bundled extension, built against this Python/MLX ABI."""
+
+-    folder = (cache or Path.home() / ".cache" / "tensorfold" / "ext") / f"hostsync-{_key()}"
+-    built = next(iter(folder.glob("_hostsync*.so")), None) if folder.is_dir() else None
+-    if built is None:
+-        _build(folder)
+-        built = next(iter(folder.glob("_hostsync*.so")))
+-    spec = importlib.util.spec_from_file_location("_hostsync", built)
+-    module = importlib.util.module_from_spec(spec)
+-    spec.loader.exec_module(module)
+-    return module
++    # A normal import also caches the module: loading a nanobind extension
++    # twice by file path attempts to register its C++ types a second time.
++    from .hostsync import _hostsync
++
++    return _hostsync
+
+
+--- a/src/tensorfold/streaming/hostsync/CMakeLists.txt
++++ b/src/tensorfold/streaming/hostsync/CMakeLists.txt
+@@ -7,7 +7,12 @@
+                 OUTPUT_VARIABLE nanobind_ROOT)
+ find_package(nanobind CONFIG REQUIRED)
+-execute_process(COMMAND "${Python_EXECUTABLE}" -c "import mlx, pathlib; print(pathlib.Path(mlx.__path__[0]) / 'share' / 'cmake' / 'MLX')"
+-                OUTPUT_STRIP_TRAILING_WHITESPACE OUTPUT_VARIABLE MLX_CMAKE)
+-find_package(MLX CONFIG REQUIRED PATHS "${MLX_CMAKE}" NO_DEFAULT_PATH)
++# The Metal wheel ships headers and libmlx, but no MLXConfig.cmake.
++execute_process(COMMAND "${Python_EXECUTABLE}" -c "import mlx, pathlib; print(pathlib.Path(mlx.__path__[0]))"
++                OUTPUT_STRIP_TRAILING_WHITESPACE OUTPUT_VARIABLE MLX_ROOT)
++add_library(mlx SHARED IMPORTED)
++set_target_properties(mlx PROPERTIES
++  IMPORTED_LOCATION "${MLX_ROOT}/lib/libmlx.dylib"
++  INTERFACE_INCLUDE_DIRECTORIES "${MLX_ROOT}/include;${MLX_ROOT}/include/metal_cpp"
++  INTERFACE_COMPILE_DEFINITIONS "_METAL_;ACCELERATE_NEW_LAPACK")
+ nanobind_add_module(_hostsync NB_STATIC STABLE_ABI LTO NOMINSIZE NB_DOMAIN mlx hostsync.cpp)
+-target_link_libraries(_hostsync PRIVATE mlx)
++target_link_libraries(_hostsync PRIVATE mlx "-framework Metal" "-framework Foundation")

@@ -1,0 +1,51 @@
+--- a/src/tensorfold/server/http.py
++++ b/src/tensorfold/server/http.py
+@@ -4,6 +4,7 @@
+
+ import json
+ import os
++import socket
+ import time
+ import traceback
+ import uuid
+@@ -45,6 +46,30 @@
+     """One thread a connection; the listen backlog takes a burst of clients connecting at once."""
+
+     request_queue_size = 128
++
++    def __init__(self, address, handler):
++        self.unix_socket = address[0].endswith(".sock")
++        if self.unix_socket:
++            self.address_family = socket.AF_UNIX
++            address = address[0]
++        super().__init__(address, handler)
++
++    def server_bind(self):
++        if not self.unix_socket:
++            return super().server_bind()
++        # The launcher checks and removes stale sockets before entering
++        # the sandbox. Bind owner-only regardless of the caller's umask.
++        previous = os.umask(0o177)
++        try:
++            self.socket.bind(self.server_address)
++        finally:
++            os.umask(previous)
++        os.chmod(self.server_address, 0o600)
++        self.server_name, self.server_port = "localhost", 0
++
++    def get_request(self):
++        request, address = super().get_request()
++        return request, ("unix", 0) if self.unix_socket else address
+
+
+ def redact_images(value: Any) -> Any:
+--- a/src/tensorfold/cli.py
++++ b/src/tensorfold/cli.py
+@@ -589,5 +589,6 @@
+     shown = "greedy" if float(sampling.get("temperature", 0.0) or 0.0) <= 0 else ", ".join(
+         f"{k} {v}" for k, v in sampling.items())
+-    print(f"[tensorfold] serving {served} at http://{args.host}:{args.port}/v1 "
++    endpoint = f"UNIX socket {args.host}" if args.host.endswith(".sock") else f"http://{args.host}:{args.port}/v1"
++    print(f"[tensorfold] serving {served} at {endpoint} "
+           f"(sampling: {shown}; drafts: {'off' if args.no_drafts else 'on'}; "
+           f"context: {app.context_window or 'unlimited'}; loaded in {time.perf_counter() - started:.1f}s)", flush=True)

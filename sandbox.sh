@@ -12,6 +12,7 @@
 # import net-tcp.sb or net-unix.sb, chosen by a .sock --host):
 #   llama-server → llama-server.sb    mlx-server → mlx-server.sb
 #   mtplx        → mtplx.sb           llm        → llm.sb
+#   tensorfold   → tensorfold.sb
 #   pi           → pi.sb
 #
 # sandbox-exec -D values are literal strings consumed by (param ...) in the
@@ -181,6 +182,7 @@ Commands:
   llama-server  Start the llama-server (sandboxed)
   llama-bench   Run llama-bench (sandboxed, no network)
   mlx-server    Start mlx_lm.server (sandboxed)
+  tensorfold    Start TensorFold (sandboxed)
   mtplx         Start the MTPLX server (sandboxed); \`mtplx tune\` runs its
                 draft-depth calibration (sandboxed, no network)
   pi            Start pi (pi-coding-agent) with the llama-cpp plugin (sandboxed)
@@ -224,6 +226,15 @@ mlx-server options:
   --port PORT           TCP port to bind (default 8080).
   All other flags are passed through to the server.
 
+tensorfold options:
+  --model SPEC          Local directory or HF repo of a supported MLX model.
+  --drafter SPEC        Local directory or HF repo; auto (default) or none.
+                        Both model and drafter download before sandboxing.
+  --host ADDR           TCP address (default 127.0.0.1), or a .sock path
+                        with the Nix build's UNIX-socket patch.
+  --port PORT           TCP port (default 8080).
+  All other flags are passed through to \`tensorfold serve\`.
+
 mtplx options:
   tune                  Leading word: run \`mtplx tune\` instead of serving.
                         Same sandbox, no network; the tuned draft depth
@@ -257,7 +268,7 @@ Environment:
   SANDBOXED_AI_PROG  Program name shown in this help (set by the Nix wrapper)
   MODEL              Model spec (overridden by --model)
   MMPROJ             Projector spec (overridden by --mmproj)
-  LLAMA_SERVER, LLAMA_BENCH, MLX_SERVER, MLX_VLM_SERVER, MTPLX, PI, LLM, CURL
+  LLAMA_SERVER, LLAMA_BENCH, MLX_SERVER, MLX_VLM_SERVER, MTPLX, TENSORFOLD, PI, LLM, CURL
                      Explicit binary paths (fallback: PATH lookup)
   PI_LLAMA_DIR       Dir holding the pi llama-cpp plugin's index.ts
                      (set by the Nix wrapper; required for the pi command)
@@ -272,6 +283,8 @@ Environment:
                      so agent loops keep their prompt cache)
   MTPLX_SESSION_POSTCOMMIT_MODE, MTPLX_POSTCOMMIT_CROSS_SESSION_YIELD
                      mtplx KV-commit policy overrides, passed through
+  TENSORFOLD_MEMORY_LIMIT_GB
+                     TensorFold process memory budget in GiB
   NIX_SSL_CERT_FILE  CA bundle granted read-only to the mlx sandbox
   LLAMA_API_KEY, OPENAI_API_KEY
                      Client API keys; local servers accept the "dummy" default
@@ -1089,6 +1102,196 @@ cmd_mlx() {
     "$mlx_server" "${server_args[@]}" "${extra_args[@]}"
 }
 
+# TensorFold uses MLX and the same Python execution chain.
+cmd_tensorfold() {
+  # Serve only: downloads and updates must never run in the GPU sandbox.
+  [[ "${1:-}" != serve ]] || shift
+  local drafter=auto draft_dir=/dev/null
+  # Consumes model/drafter/endpoint options; other serve flags pass through.
+  # MODEL is intentionally global: the flag overrides the env var.
+  local -a extra_args=()
+  local socket="" want_help="" host_arg="" tcp_host="" port_arg=""
+  [[ $# -gt 0 ]] || want_help=1
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --model | --model=* | --drafter | --drafter=*)
+      local option="${1%%=*}" value
+      if [[ "$1" == *=* ]]; then
+        value="${1#*=}"
+        [[ -n "$value" ]] || die "$option requires an argument"
+        shift
+      else
+        need_arg "$@"
+        value="$2"
+        shift 2
+      fi
+      if [[ "$option" == --model ]]; then MODEL="$value"; else drafter="$value"; fi
+      ;;
+    --host | --host=*)
+      # Same as in cmd_llama: .sock means a unix socket, otherwise TCP.
+      host_arg="${1#--host}"
+      host_arg="${host_arg#=}"
+      if [[ -n "$host_arg" ]]; then
+        shift
+      else
+        need_arg "$@"
+        host_arg="$2"
+        shift 2
+      fi
+      socket="" tcp_host=""
+      if [[ "$host_arg" == *.sock ]]; then
+        socket="$host_arg"
+      else
+        tcp_host="$host_arg"
+      fi
+      ;;
+    --port | --port=*)
+      # Consumed rather than passed through, as in cmd_llama.
+      port_arg="${1#--port}"
+      port_arg="${port_arg#=}"
+      if [[ -n "$port_arg" ]]; then
+        shift
+      else
+        need_arg "$@"
+        port_arg="$2"
+        shift 2
+      fi
+      [[ "$port_arg" =~ ^[0-9]+$ ]] || die "not a port number: $port_arg"
+      ((10#$port_arg >= 1 && 10#$port_arg <= 65535)) || die "port out of range: $port_arg"
+      PORT="$port_arg"
+      ;;
+    -h | --help)
+      # Recorded, not consumed: with a model this passes through to the
+      # running server's --help; without one it selects help-only mode.
+      want_help=1
+      extra_args+=("$1")
+      shift
+      ;;
+    *)
+      extra_args+=("$1")
+      shift
+      ;;
+    esac
+  done
+  # Help without a model: run the server's own --help under the normal
+  # sandbox with nothing to serve — MODEL_DIR becomes /dev/null, which the
+  # profile can reference but which grants no file (the TTY_DEV/CA_FILE
+  # convention). With a model, --help still resolves it first and passes
+  # through, which the download-integrity e2e test relies on.
+  local help_only=""
+  if [[ -z "${MODEL:-}" ]]; then
+    [[ -n "$want_help" ]] || die "no model specified — use --model or set MODEL env var"
+    help_only=1
+  fi
+  # Before the download: a bad --host should not cost a full repo fetch.
+  select_net "$socket"
+
+  local model_dir=/dev/null
+  [[ -n "$help_only" ]] || model_dir="$(resolve_mlx_model "$MODEL")"
+
+  case "$drafter" in
+  auto | none) ;;
+  *) draft_dir="$(resolve_mlx_model "$drafter")" ;;
+  esac
+
+  TMPDIR="$TMPDIR/tensorfold"
+  CACHE_DIR="$CACHE_DIR/tensorfold"
+  mkdir -p "$CACHE_DIR" "$TMPDIR"
+  export TMPDIR
+  # Keep snapshots and HF metadata in TensorFold's own writable cache.
+  export HOME="$CACHE_DIR/tensorfold-home"
+  export HF_HOME="$HOME/huggingface"
+  # Rebuild only the HF metadata; conversation snapshots survive restarts.
+  rm -rf "$HF_HOME/hub"
+  mkdir -p "$HF_HOME/hub"
+  # The model is fully local and the sandbox denies outbound network anyway;
+  # keep huggingface_hub from even trying.
+  export HF_HUB_OFFLINE=1
+  # Python auto-imports usercustomize from the user site directory under
+  # $HOME. HOME is ours (above) and outside every client's grants, but the
+  # server holds GPU and model access, so refuse user-site imports outright
+  # rather than rely on the directory staying unwritable.
+  export PYTHONNOUSERSITE=1
+
+  # Retain the repo id for TensorFold's family-specific required-file
+  # checks, while resolving it entirely from the verified local snapshot.
+  local serve_ref="$model_dir"
+  if [[ -z "$help_only" && ! -d "$MODEL" ]]; then
+    seed_hf_cache "$MODEL" "$model_dir"
+    serve_ref="$MODEL"
+  fi
+
+  local mlx_server
+  mlx_server="$(resolve_binary "${TENSORFOLD:-}" tensorfold TENSORFOLD)"
+  # Explicit drafters use the verified local directory and get a separate
+  # read-only grant; auto sees only this server's isolated HF cache.
+  [[ "$draft_dir" == /dev/null ]] || drafter="$draft_dir"
+
+  local pkg_store
+  pkg_store="$(pkg_store_for "$mlx_server")"
+  resolve_ca_file
+  resolve_darwin_dirs
+  resolve_stdio
+  resolve_mlx_exec "$mlx_server"
+
+  local -a server_args=()
+  if [[ -n "$help_only" ]]; then
+    server_args=(serve --help)
+    extra_args=()
+  else
+    printf 'Starting sandboxed %s:\n' "${mlx_server##*/}"
+    info "binary:" "$mlx_server"
+    info "model:" "$serve_ref"
+    info "drafter:" "$drafter"
+    if [[ -n "$socket" ]]; then
+      info "socket:" "$NET_TARGET"
+    else
+      info "port:" "$PORT"
+    fi
+    info "extra:" "${extra_args[*]:-none}"
+    printf '\n'
+
+    server_args=(serve "$serve_ref" --port "$PORT" --drafter "$drafter" --no-update-check)
+    if [[ -n "$socket" ]]; then
+      server_args+=(--host "$NET_TARGET")
+    else
+      server_args+=(--host "${tcp_host:-127.0.0.1}")
+    fi
+  fi
+
+  cd "$CACHE_DIR"
+
+  # NIX_SSL_CERT_FILE: nixpkgs' certifi opens it verbatim (see
+  # resolve_ca_file); the profile grants read on exactly that path.
+  local -a sbx_env
+  sandbox_env sbx_env HOME TMPDIR HF_HOME HF_HUB_OFFLINE PYTHONNOUSERSITE NIX_SSL_CERT_FILE TENSORFOLD_MEMORY_LIMIT_GB
+  exec "${sbx_env[@]}" "$SANDBOX_EXEC" \
+    -D COMMON_SB="$PROFILES_DIR/common.sb" \
+    -D SERVER_SB="$PROFILES_DIR/server.sb" \
+    -D NET_SB="$NET_SB" \
+    -D NET_TARGET="$NET_TARGET" \
+    -D PKG_STORE="$pkg_store" \
+    -D HOME_DIR="$HOME_DIR" \
+    -D HOME_PARENT="$HOME_PARENT" \
+    -D STDOUT_PATH="$STDOUT_PATH" \
+    -D STDERR_PATH="$STDERR_PATH" \
+    -D DARWIN_USER_TEMP_DIR="$DARWIN_USER_TEMP_DIR" \
+    -D DARWIN_METAL_CACHE="$DARWIN_METAL_CACHE" \
+    -D DARWIN_METALFE_CACHE="$DARWIN_METALFE_CACHE" \
+    -D CA_FILE="$CA_FILE" \
+    -D MLX_SERVER="$mlx_server" \
+    -D MLX_INTERP="$MLX_INTERP" \
+    -D MLX_WRAPPED="$MLX_WRAPPED" \
+    -D MLX_WRAPPED_INTERP="$MLX_WRAPPED_INTERP" \
+    -D MODEL_DIR="$model_dir" \
+    -D DRAFT_DIR="$draft_dir" \
+    -D MLX_SB="$PROFILES_DIR/mlx-server.sb" \
+    -D CACHE_DIR="$CACHE_DIR" \
+    -D TMPDIR="$TMPDIR" \
+    -f "$PROFILES_DIR/tensorfold.sb" \
+    "$mlx_server" "${server_args[@]}" "${extra_args[@]}"
+}
+
 # MTPLX (github.com/youssofal/MTPLX): MLX server that decodes with the
 # model's own MTP heads. Its profile is mlx-server.sb plus process-fork
 # (see mtplx.sb): `mtplx serve` is a wrapper that spawns the real server
@@ -1486,6 +1689,7 @@ llama-server) cmd_llama "$@" ;;
 llama-bench) cmd_bench "$@" ;;
 mlx-server) cmd_mlx "$@" ;;
 mtplx) cmd_mtplx "$@" ;;
+tensorfold) cmd_tensorfold "$@" ;;
 pi) cmd_pi "$@" ;;
 llm) cmd_llm "$@" ;;
 -h | --help | help) usage ;;
