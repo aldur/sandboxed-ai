@@ -4,6 +4,7 @@ This repository provides `sandbox-exec` profiles to run:
 
 1. [`llama-server`][1]
 1. [`mlx_lm.server`][5]
+1. [vLLM with vllm-metal][7]
 1. [MTPLX][6]
 1. [`pi`][4]
 1. [`simonw/llm`][3]
@@ -61,6 +62,35 @@ brew install mlx-lm
 
 # Vision models are automatically detected and served with `mlx_vlm.server`.
 ```
+
+### vLLM (Metal)
+
+[vllm-metal][7] runs vLLM on Apple Silicon (macOS 15 or later).
+The Nix package bundles upstream vLLM, Metal, and their dependency wheels.
+
+The weekly update workflow reads Metal's latest stable release and its declared
+vLLM release, resolves their upstream dependency metadata, and regenerates
+`packages/vllm/sources.json`. Nix installs the pinned artifacts and builds the
+Git-pinned mlx-lm dependency. The updater opens a PR only after the package
+builds and sandboxed inference passes over both TCP and UNIX sockets.
+To run the same update locally on Apple Silicon: `nix run .#update-vllm`.
+
+```bash
+nix develop
+sandboxed-ai vllm --model mlx-community/Qwen3-0.6B-4bit
+# Serve over a UNIX socket:
+sandboxed-ai vllm --model mlx-community/Qwen3-0.6B-4bit --host /tmp/vllm.sock
+```
+
+Models download and undergo checksum verification before serving. vLLM reads
+them from a local directory with Hugging Face offline mode and usage reporting
+disabled. The OpenAI-compatible API binds `127.0.0.1:8080` by default; `--port`
+changes it. `--host PATH.sock` (or `--uds PATH.sock`) uses vLLM's native UNIX
+socket support. `vllm-server` is an alias for `vllm`; `VLLM` overrides the binary.
+Workers inherit the sandbox and communicate over local IPC sockets. Gloo also
+requires ephemeral TCP listeners on loopback, even when the API uses a UNIX
+socket. Outbound TCP remains denied. This profile targets serving on one Mac;
+distributed clusters need additional network access and are not supported.
 
 ### MTPLX
 
@@ -134,6 +164,7 @@ Commands:
   llama-server  Start the llama-server (sandboxed)
   llama-bench   Run llama-bench (sandboxed, no network)
   mlx-server    Start mlx_lm.server (sandboxed)
+  vllm          Start vLLM with vllm-metal (sandboxed; alias: vllm-server)
   mtplx         Start the MTPLX server (sandboxed); `mtplx tune` runs its
                 draft-depth calibration (sandboxed, no network)
   pi            Start pi (pi-coding-agent) with the llama-cpp plugin (sandboxed)
@@ -177,6 +208,16 @@ mlx-server options:
   --port PORT           TCP port to bind (default 8080).
   All other flags are passed through to the server.
 
+vllm options:
+  serve                 Optional leading word (as in the native vLLM CLI).
+  --model SPEC          Local model directory or HF repo; a leading model
+                        argument is also accepted. Downloads host-side.
+  --host ADDR           TCP bind address (default 127.0.0.1), or a UNIX
+                        socket path ending in .sock (also --uds PATH).
+  --port PORT           TCP port to bind (default 8080; alias: -p).
+  All other flags are passed through to `vllm serve`.
+  Bundled by the Nix flake.
+
 mtplx options:
   tune                  Leading word: run `mtplx tune` instead of serving.
                         Same sandbox, no network; the tuned draft depth
@@ -210,7 +251,7 @@ Environment:
   SANDBOXED_AI_PROG  Program name shown in this help (set by the Nix wrapper)
   MODEL              Model spec (overridden by --model)
   MMPROJ             Projector spec (overridden by --mmproj)
-  LLAMA_SERVER, LLAMA_BENCH, MLX_SERVER, MLX_VLM_SERVER, MTPLX, PI, LLM, CURL
+  LLAMA_SERVER, LLAMA_BENCH, MLX_SERVER, MLX_VLM_SERVER, MTPLX, VLLM, PI, LLM, CURL
                      Explicit binary paths (fallback: PATH lookup)
   PI_LLAMA_DIR       Dir holding the pi llama-cpp plugin's index.ts
                      (set by the Nix wrapper; required for the pi command)
@@ -225,3 +266,4 @@ Environment:
 [4]: https://pi.dev/
 [5]: https://github.com/ml-explore/mlx-lm
 [6]: https://github.com/youssofal/MTPLX
+[7]: https://github.com/vllm-project/vllm-metal

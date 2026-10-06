@@ -12,7 +12,7 @@
 # import net-tcp.sb or net-unix.sb, chosen by a .sock --host):
 #   llama-server → llama-server.sb    mlx-server → mlx-server.sb
 #   mtplx        → mtplx.sb           llm        → llm.sb
-#   pi           → pi.sb
+#   vllm         → vllm.sb           pi         → pi.sb
 #
 # sandbox-exec -D values are literal strings consumed by (param ...) in the
 # profiles — they parameterize path/address filters, never profile code.
@@ -181,6 +181,7 @@ Commands:
   llama-server  Start the llama-server (sandboxed)
   llama-bench   Run llama-bench (sandboxed, no network)
   mlx-server    Start mlx_lm.server (sandboxed)
+  vllm          Start vLLM with vllm-metal (sandboxed; alias: vllm-server)
   mtplx         Start the MTPLX server (sandboxed); \`mtplx tune\` runs its
                 draft-depth calibration (sandboxed, no network)
   pi            Start pi (pi-coding-agent) with the llama-cpp plugin (sandboxed)
@@ -224,6 +225,16 @@ mlx-server options:
   --port PORT           TCP port to bind (default 8080).
   All other flags are passed through to the server.
 
+vllm options:
+  serve                 Optional leading word (as in the native vLLM CLI).
+  --model SPEC          Local model directory or HF repo; a leading model
+                        argument is also accepted. Downloads host-side.
+  --host ADDR           TCP bind address (default 127.0.0.1), or a UNIX
+                        socket path ending in .sock (also --uds PATH).
+  --port PORT           TCP port to bind (default 8080; alias: -p).
+  All other flags are passed through to \`vllm serve\`.
+  Bundled by the Nix flake.
+
 mtplx options:
   tune                  Leading word: run \`mtplx tune\` instead of serving.
                         Same sandbox, no network; the tuned draft depth
@@ -257,7 +268,7 @@ Environment:
   SANDBOXED_AI_PROG  Program name shown in this help (set by the Nix wrapper)
   MODEL              Model spec (overridden by --model)
   MMPROJ             Projector spec (overridden by --mmproj)
-  LLAMA_SERVER, LLAMA_BENCH, MLX_SERVER, MLX_VLM_SERVER, MTPLX, PI, LLM, CURL
+  LLAMA_SERVER, LLAMA_BENCH, MLX_SERVER, MLX_VLM_SERVER, MTPLX, VLLM, PI, LLM, CURL
                      Explicit binary paths (fallback: PATH lookup)
   PI_LLAMA_DIR       Dir holding the pi llama-cpp plugin's index.ts
                      (set by the Nix wrapper; required for the pi command)
@@ -1089,6 +1100,147 @@ cmd_mlx() {
     "$mlx_server" "${server_args[@]}" "${extra_args[@]}"
 }
 
+# vLLM with the Metal platform plugin. Single-machine serving uses Python
+# workers and ZMQ UNIX sockets; their IPC gets its own directory and never
+# needs a general outbound network grant.
+cmd_vllm() {
+  [[ "${1:-}" != serve ]] || shift
+  # Accept the native leading model argument as well as our --model flag.
+  if [[ $# -gt 0 && "$1" != -* ]]; then
+    MODEL="$1"
+    shift
+  fi
+  local -a extra_args=()
+  local socket="" tcp_host=127.0.0.1 want_help="" help_arg=--help value="" option=""
+  [[ $# -gt 0 || -n "${MODEL:-}" ]] || want_help=1
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --model | --model=* | --host | --host=* | --port | --port=* | -p | --uds | --uds=*)
+      option="${1%%=*}"
+      if [[ "$1" == *=* ]]; then
+        value="${1#*=}"
+        [[ -n "$value" ]] || die "$option requires an argument"
+        shift
+      else
+        need_arg "$@"
+        value="$2"
+        shift 2
+      fi
+      case "$option" in
+      --model) MODEL="$value" ;;
+      --host)
+        socket=""
+        if [[ "$value" == *.sock ]]; then socket="$value"; else tcp_host="$value"; fi
+        ;;
+      --uds) socket="$value" ;;
+      --port | -p)
+        if [[ ! "$value" =~ ^[0-9]{1,5}$ ]] || ((10#$value < 1 || 10#$value > 65535)); then
+          die "not a port number (1-65535): $value"
+        fi
+        PORT="$((10#$value))"
+        ;;
+      esac
+      ;;
+    -h | --help | --help=*)
+      want_help=1
+      help_arg="$1"
+      extra_args+=("$1")
+      shift
+      ;;
+    *)
+      extra_args+=("$1")
+      shift
+      ;;
+    esac
+  done
+  local help_only=""
+  if [[ -z "${MODEL:-}" ]]; then
+    [[ -n "$want_help" ]] || die "no model specified — use --model or set MODEL env var"
+    help_only=1
+  fi
+  select_net "$socket"
+
+  # Fail before downloading weights when vLLM has not been installed.
+  local vllm_bin pkg_store model_dir=/dev/null
+  vllm_bin="$(resolve_binary "${VLLM:-}" vllm VLLM)"
+  pkg_store="$(pkg_store_for "$vllm_bin")"
+  [[ -n "$help_only" ]] || model_dir="$(resolve_mlx_model "$MODEL")"
+
+  TMPDIR="$TMPDIR/vllm"
+  CACHE_DIR="$CACHE_DIR/vllm"
+  mkdir -p "$CACHE_DIR" "$TMPDIR"
+  export TMPDIR
+  export HOME="$CACHE_DIR/vllm-home"
+  export HF_HOME="$HOME/huggingface"
+  mkdir -p "$HF_HOME/hub"
+  export HF_HUB_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 PYTHONNOUSERSITE=1
+  export VLLM_NO_USAGE_STATS=1 VLLM_DO_NOT_TRACK=1
+  # Avoid get_ip() probing an external address to discover this machine.
+  export VLLM_HOST_IP=127.0.0.1 VLLM_WORKER_MULTIPROC_METHOD=spawn
+  resolve_ca_file
+  resolve_darwin_dirs
+  resolve_stdio
+  resolve_mlx_exec "$vllm_bin"
+  # sockaddr_un paths are limited to 103 bytes on macOS. The state path
+  # can be arbitrarily long, so keep ZMQ's UUID socket names under Apple's
+  # short per-user temp path. Other server profiles grant this temp tree
+  # for Metal but cannot connect to its sockets.
+  export VLLM_RPC_BASE_PATH="$DARWIN_USER_TEMP_DIR/vllm"
+  [[ -d "$VLLM_RPC_BASE_PATH" ]] || mkdir -m 700 "$VLLM_RPC_BASE_PATH"
+
+  local -a server_args=(serve)
+  if [[ -n "$help_only" ]]; then
+    server_args+=("$help_arg")
+    extra_args=()
+  else
+    # Give workers time to stop without vLLM's immediate process-tree kill,
+    # which uses psutil to enumerate unrelated host processes.
+    server_args+=("$model_dir" --served-model-name "$MODEL" --shutdown-timeout 5)
+    if [[ -n "$socket" ]]; then
+      server_args+=(--uds "$NET_TARGET")
+    else
+      server_args+=(--host "$tcp_host" --port "$PORT")
+    fi
+    printf 'Starting sandboxed vllm serve (Metal):\n'
+    info "binary:" "$vllm_bin"
+    info "model:" "$model_dir"
+    info "model id:" "$MODEL"
+    if [[ -n "$socket" ]]; then info "socket:" "$NET_TARGET"; else info "port:" "$PORT"; fi
+    info "extra:" "${extra_args[*]:-none}"
+    printf '\n'
+  fi
+
+  cd "$CACHE_DIR"
+  local -a sbx_env
+  sandbox_env sbx_env HOME TMPDIR HF_HOME HF_HUB_OFFLINE HF_HUB_DISABLE_TELEMETRY \
+    PYTHONNOUSERSITE NIX_SSL_CERT_FILE VLLM_NO_USAGE_STATS VLLM_DO_NOT_TRACK \
+    VLLM_HOST_IP VLLM_WORKER_MULTIPROC_METHOD VLLM_RPC_BASE_PATH
+  exec "${sbx_env[@]}" "$SANDBOX_EXEC" \
+    -D COMMON_SB="$PROFILES_DIR/common.sb" \
+    -D SERVER_SB="$PROFILES_DIR/server.sb" \
+    -D NET_SB="$NET_SB" \
+    -D NET_TARGET="$NET_TARGET" \
+    -D PKG_STORE="$pkg_store" \
+    -D HOME_DIR="$HOME_DIR" \
+    -D HOME_PARENT="$HOME_PARENT" \
+    -D STDOUT_PATH="$STDOUT_PATH" \
+    -D STDERR_PATH="$STDERR_PATH" \
+    -D DARWIN_USER_TEMP_DIR="$DARWIN_USER_TEMP_DIR" \
+    -D DARWIN_METAL_CACHE="$DARWIN_METAL_CACHE" \
+    -D DARWIN_METALFE_CACHE="$DARWIN_METALFE_CACHE" \
+    -D CA_FILE="$CA_FILE" \
+    -D MLX_SERVER="$vllm_bin" \
+    -D MLX_INTERP="$MLX_INTERP" \
+    -D MLX_WRAPPED="$MLX_WRAPPED" \
+    -D MLX_WRAPPED_INTERP="$MLX_WRAPPED_INTERP" \
+    -D MODEL_DIR="$model_dir" \
+    -D CACHE_DIR="$CACHE_DIR" \
+    -D TMPDIR="$TMPDIR" \
+    -D VLLM_RPC_BASE_PATH="$VLLM_RPC_BASE_PATH" \
+    -f "$PROFILES_DIR/vllm.sb" \
+    "$vllm_bin" "${server_args[@]}" "${extra_args[@]}"
+}
+
 # MTPLX (github.com/youssofal/MTPLX): MLX server that decodes with the
 # model's own MTP heads. Its profile is mlx-server.sb plus process-fork
 # (see mtplx.sb): `mtplx serve` is a wrapper that spawns the real server
@@ -1486,6 +1638,7 @@ llama-server) cmd_llama "$@" ;;
 llama-bench) cmd_bench "$@" ;;
 mlx-server) cmd_mlx "$@" ;;
 mtplx) cmd_mtplx "$@" ;;
+vllm | vllm-server) cmd_vllm "$@" ;;
 pi) cmd_pi "$@" ;;
 llm) cmd_llm "$@" ;;
 -h | --help | help) usage ;;

@@ -1,0 +1,40 @@
+; vim:ft=scheme
+(version 1)
+(deny default)
+
+;; vLLM + vllm-metal: the API process and engine workers share the same
+;; model/cache grants and pinned Python executable chain.
+(import (param "COMMON_SB"))
+(import (param "SERVER_SB"))
+
+(allow process-fork)
+(allow signal (target children))
+(allow process-exec
+  (literal (param "MLX_SERVER"))
+  (literal (param "MLX_INTERP"))
+  (literal (param "MLX_WRAPPED"))
+  (literal (param "MLX_WRAPPED_INTERP")))
+
+(allow file-read*
+  (literal "/private/etc/hosts")
+  (literal (param "CA_FILE")))
+;; Python temporary files and the single-worker file rendezvous.
+(allow file-read* file-write* file-lock
+  (subpath (param "TMPDIR")))
+
+;; CPython multiprocessing uses randomly named /mp- semaphores for locks.
+;; No shared-memory grant: the local engine transports requests over ZMQ.
+(allow ipc-posix-sem
+  (ipc-posix-name-prefix "/mp-"))
+
+;; Gloo creates an ephemeral loopback listener even for a single rank.
+;; Its dynamically chosen port cannot be pinned in the profile. Permit
+;; loopback listeners (also in UNIX API socket mode) in addition to the API
+;; endpoint selected by NET_TARGET. No outbound TCP is allowed.
+(allow network-bind network-inbound (local tcp "localhost:*"))
+
+;; Engine handshakes and requests
+;; may connect only to vLLM's private UNIX IPC directory.
+(allow network-bind network-inbound network-outbound
+  (subpath (param "VLLM_RPC_BASE_PATH")))
+(deny network-outbound (literal "/private/var/run/mDNSResponder"))

@@ -42,3 +42,6 @@ jobs:
         env:
           SANDBOXED_AI_TEST_COLD_METAL: "1"
         run: nix develop .#e2e --command tests/e2e.sh
+
+      - name: Test vLLM dependency updater
+        run: nix develop .#vllm --command python3 tests/vllm-update.py
