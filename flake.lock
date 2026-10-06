@@ -22,11 +22,11 @@
         "systems": "systems"
       },
       "locked": {
-        "lastModified": 1790960366,
-        "narHash": "sha256-oVOZahrnmyfprcKnXWciZqgB6/yFI3YBErnPTDaRcDk=",
+        "lastModified": 1791275818,
+        "narHash": "sha256-Xdkho9lLoeSRe09MgpAUG02sKZZOsfjNtXSIKni/B68=",
         "owner": "aldur",
         "repo": "dotfiles",
-        "rev": "01b5c604ba2dd6977e2160216ecf913ff9b2321a",
+        "rev": "26b0471df2b442ed034cb2e358e53e92587209f4",
         "type": "github"
       },
       "original": {
