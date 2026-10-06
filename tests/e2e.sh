@@ -677,7 +677,10 @@ if [[ -n "$PY" && -n "$VLLM" ]]; then
   if "$PY" "$ROOT/tests/vllm-inference.py" >"$WORK/vllm-inference.log" 2>&1; then
     ok "vllm (tcp + unix socket) serves completions"
   else
-    fail "vllm (tcp + unix socket) serves completions" "$WORK/vllm-inference.log"
+    fail "vllm (tcp + unix socket) serves completions"
+    # The last five lines only contain the API server's generic startup
+    # error. Keep the worker's original exception visible in CI.
+    sed 's/^/       /' "$WORK/vllm-inference.log"
   fi
 else
   skip "vllm (tcp + unix socket)" "install vllm-metal to test"

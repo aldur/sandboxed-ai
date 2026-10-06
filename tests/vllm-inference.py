@@ -21,11 +21,19 @@ MODEL = os.environ.get("TEST_VLLM_MODEL", "mlx-community/Qwen3-0.6B-4bit")
 
 
 def exercise(endpoint, args, log):
+    # Metal subtracts model weights and execution overhead from this budget.
+    # Ten percent is too small on the CI runner. Target at most 2 GiB (or
+    # half of RAM on smaller machines), without reserving a large cache on
+    # developer machines with more memory.
+    physical_memory = int(subprocess.check_output(
+        ["/usr/sbin/sysctl", "-n", "hw.memsize"], text=True,
+    ))
+    memory_fraction = min(0.5, (2 * 1024**3) / physical_memory)
     with log.open("w") as output:
         process = subprocess.Popen(
             [str(ROOT / "sandbox.sh"), "vllm", "--model", MODEL,
              "--served-model-name", "sandboxed-vllm-test", "--max-model-len", "512",
-             "--max-num-seqs", "1", "--gpu-memory-utilization", "0.1", *args],
+             "--max-num-seqs", "1", "--gpu-memory-utilization", str(memory_fraction), *args],
             stdout=output, stderr=subprocess.STDOUT, start_new_session=True,
         )
 
