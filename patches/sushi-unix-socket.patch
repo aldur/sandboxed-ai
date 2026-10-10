@@ -1,0 +1,233 @@
+diff --git a/src/main.zig b/src/main.zig
+index 42fd3eb..b166739 100644
+--- a/src/main.zig
++++ b/src/main.zig
+@@ -123,8 +123,8 @@ fn printUsage(io: std.Io) void {
+         \\Options:
+         \\  --model <dir>       Path to MLX model directory
+         \\  --serve             Start HTTP server mode
+-        \\  --host <ip>         Bind address (default: 127.0.0.1 — this Mac only;
+-        \\                      0.0.0.0 opens it to the local network)
++        \\  --host <addr>       IP address or UNIX socket path ending in .sock
++        \\                      (default: 127.0.0.1; 0.0.0.0 opens the local network)
+         \\  --port <n>          Bind port (default: 12345)
+         \\  --ctx-size <n>      Maximum context length (default: model max)
+         \\  --config-overrides <json>   JSON object deep-merged into EVERY
+diff --git a/src/server.zig b/src/server.zig
+index fb54032..c7dbd04 100644
+--- a/src/server.zig
++++ b/src/server.zig
+@@ -1,4 +1,5 @@
+ const std = @import("std");
++const unix_listener = @import("unix_listener.zig");
+ const mlx = @import("mlx.zig");
+ const transformer_mod = @import("transformer.zig");
+ const kv_quant_mod = @import("kv_quant.zig");
+@@ -133,7 +134,8 @@ pub fn bindAddress(host: []const u8, port: u16) error{InvalidHost}!std.Io.net.Ip
+     return .{ .ip4 = .{ .bytes = ip4_bytes, .port = port } };
+ }
+ 
+-pub fn startListener(host: []const u8, port: u16) (error{InvalidHost} || std.Io.net.IpAddress.ListenError)!std.Io.net.Server {
++pub fn startListener(host: []const u8, port: u16) unix_listener.ListenError!std.Io.net.Server {
++    if (unix_listener.isUnix(host)) return unix_listener.listen(host);
+     var addr = try bindAddress(host, port);
+     const ip4 = addr.ip4;
+     const rc = std.posix.system.socket(std.posix.AF.INET, std.posix.SOCK.STREAM, 0);
+@@ -176,7 +178,8 @@ pub fn startListener(host: []const u8, port: u16) (error{InvalidHost} || std.Io.
+     return .{ .socket = .{ .handle = fd, .address = addr }, .options = {} };
+ }
+ 
+-pub fn ensurePortFree(io: std.Io, host: []const u8, port: u16) (error{InvalidHost} || std.Io.net.IpAddress.ListenError)!void {
++pub fn ensurePortFree(io: std.Io, host: []const u8, port: u16) unix_listener.ListenError!void {
++    if (unix_listener.isUnix(host)) return unix_listener.ensureFree(io, host);
+     const addr = try bindAddress(host, port);
+     if (addr.connect(io, .{ .mode = .stream })) |s| {
+         s.close(io);
+@@ -188,7 +191,11 @@ pub fn ensurePortFree(io: std.Io, host: []const u8, port: u16) (error{InvalidHos
+ 
+ pub fn startupRefusal(err: anyerror, host: []const u8, port: u16, buf: []u8) ?[]const u8 {
+     switch (err) {
+-        error.AddressInUse => return std.fmt.bufPrint(buf, "port {d} is already in use", .{port}) catch unreachable,
++        error.AddressInUse => return if (unix_listener.isUnix(host))
++            std.fmt.bufPrint(buf, "socket '{s}' is already in use", .{host}) catch "socket is already in use"
++        else
++            std.fmt.bufPrint(buf, "port {d} is already in use", .{port}) catch unreachable,
++        error.NameTooLong => return "UNIX socket path exceeds 103 bytes",
+         error.InvalidHost => return std.fmt.bufPrint(buf, "invalid --host '{s}'", .{host}) catch "invalid --host",
+         else => return null,
+     }
+@@ -2183,6 +2190,7 @@ pub fn serve(
+         return err;
+     };
+     var client_thread: ?std.Thread = null;
++    defer if (unix_listener.isUnix(host)) unix_listener.cleanup(host);
+     defer closeEmbeddedListener(io, &server, client_thread);
+     listen_port = server.socket.address.ip4.port;
+     client_thread = if (server_config.on_ready) |ready| try ready(listen_port) else null;
+@@ -2240,7 +2248,11 @@ pub fn serve(
+     if (generate_mod.max_mtp_ctx != 0) {
+         log.info("MTP context ceiling: {d} tokens (--max-mtp-ctx; requests past it decode serially)\n", .{generate_mod.max_mtp_ctx});
+     }
+-    log.info("\nServer listening on http://{s}:{d}\n", .{ host, listen_port });
++    if (unix_listener.isUnix(host)) {
++        log.info("\nServer listening on UNIX socket {s}\n", .{host});
++    } else {
++        log.info("\nServer listening on http://{s}:{d}\n", .{ host, listen_port });
++    }
+     if (g_api_key != null) {
+         log.info("API key auth: ENABLED for non-loopback requests (localhost is trusted; /health and the chat page stay open)\n", .{});
+     }
+@@ -2259,7 +2271,7 @@ pub fn serve(
+     log.info("  POST /tokenize\n", .{});
+     log.info("  POST /detokenize\n\n", .{});
+     var chat_url_buf: [96]u8 = undefined;
+-    log.info("chat in your browser: {s}\n\n", .{chatPageUrl(&chat_url_buf, host, listen_port)});
++    if (!unix_listener.isUnix(host)) log.info("chat in your browser: {s}\n\n", .{chatPageUrl(&chat_url_buf, host, listen_port)});
+ 
+     // Print system metrics once at startup
+     const rss = metrics.getAppRssMb();
+@@ -2291,7 +2303,7 @@ pub fn serve(
+         if (poll_result == 0) continue; // timeout, re-check shutdown flag
+         if (shutdown_requested.load(.acquire)) break;
+ 
+-        const accepted_stream = server.accept(io) catch |err| {
++        const accepted_stream = (if (unix_listener.isUnix(host)) unix_listener.accept(&server) else server.accept(io)) catch |err| {
+             if (shutdown_requested.load(.acquire)) break;
+             log.err("accept error: {}\n", .{err});
+             continue;
+@@ -27064,10 +27076,10 @@ test "GLM billed checkpoint peak equals the checkpoints its prefill captures, wh
+     const per_cp = cfg.ssmCheckpointBytes();
+     const Case = struct { seq: u64, matched: u64 };
+     const cases = [_]Case{
+-        .{ .seq = 16, .matched = 0 },       .{ .seq = 31, .matched = 0 },          .{ .seq = 40, .matched = 0 },
+-        .{ .seq = 2049, .matched = 0 },     .{ .seq = 5000, .matched = 0 },        .{ .seq = 18432, .matched = 0 },
+-        .{ .seq = 70000, .matched = 0 },    .{ .seq = 65536, .matched = 61440 },   .{ .seq = 18432, .matched = 16384 },
+-        .{ .seq = 9000, .matched = 8188 },  .{ .seq = 9100, .matched = 8188 },
++        .{ .seq = 16, .matched = 0 },      .{ .seq = 31, .matched = 0 },        .{ .seq = 40, .matched = 0 },
++        .{ .seq = 2049, .matched = 0 },    .{ .seq = 5000, .matched = 0 },      .{ .seq = 18432, .matched = 0 },
++        .{ .seq = 70000, .matched = 0 },   .{ .seq = 65536, .matched = 61440 }, .{ .seq = 18432, .matched = 16384 },
++        .{ .seq = 9000, .matched = 8188 }, .{ .seq = 9100, .matched = 8188 },
+     };
+     for ([_]u32{ 256, 2048, 8192, 65536 }) |stride| {
+         ssm_checkpoint_stride = stride;
+diff --git a/src/unix_listener.zig b/src/unix_listener.zig
+new file mode 100644
+index 0000000..23498e2
+--- /dev/null
++++ b/src/unix_listener.zig
+@@ -0,0 +1,115 @@
++const std = @import("std");
++
++pub const ListenError = error{ InvalidHost, NameTooLong, FileNotFound } || std.Io.net.IpAddress.ListenError;
++
++pub fn isUnix(host: []const u8) bool {
++    return std.mem.endsWith(u8, host, ".sock");
++}
++
++fn address(path: []const u8) ListenError!std.posix.sockaddr.un {
++    var sa = std.posix.sockaddr.un{ .path = @splat(0) };
++    if (path.len == 0 or std.mem.indexOfScalar(u8, path, 0) != null) return error.InvalidHost;
++    if (path.len >= sa.path.len) return error.NameTooLong;
++    @memcpy(sa.path[0..path.len], path);
++    return sa;
++}
++
++// std.Io.net's stream I/O accepts any socket descriptor, but its address
++// union and accept implementation only support IP. UNIX peers are local:
++// use a loopback tag for the existing HTTP authorization checks, without
++// opening any IP sockets.
++const local_peer: std.Io.net.IpAddress = .{ .ip4 = .{ .bytes = .{ 127, 0, 0, 1 }, .port = 0 } };
++
++pub fn listen(path: []const u8) ListenError!std.Io.net.Server {
++    const sa = try address(path);
++    const rc = std.posix.system.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0);
++    const fd: std.posix.socket_t = switch (std.posix.errno(rc)) {
++        .SUCCESS => @intCast(rc),
++        .MFILE => return error.ProcessFdQuotaExceeded,
++        .NFILE => return error.SystemFdQuotaExceeded,
++        .NOMEM, .NOBUFS => return error.SystemResources,
++        else => return error.Unexpected,
++    };
++    errdefer _ = std.posix.system.close(fd);
++    if (std.posix.errno(std.posix.system.fcntl(fd, std.posix.F.SETFD, @as(usize, std.posix.FD_CLOEXEC))) != .SUCCESS) return error.Unexpected;
++    // UNIX clients bypass API-key auth like loopback clients. Never expose
++    // that socket to another user, even outside the sandbox wrapper.
++    const old_umask = std.posix.system.umask(0o177);
++    const bind_rc = std.posix.system.bind(fd, @ptrCast(&sa), @sizeOf(@TypeOf(sa)));
++    const bind_errno = std.posix.errno(bind_rc);
++    _ = std.posix.system.umask(old_umask);
++    switch (bind_errno) {
++        .SUCCESS => {},
++        .ADDRINUSE => return error.AddressInUse,
++        .ACCES, .PERM => return error.AccessDenied,
++        .NOENT => return error.FileNotFound,
++        .NOMEM, .NOBUFS => return error.SystemResources,
++        else => return error.Unexpected,
++    }
++    // Only remove a path after our own bind succeeded. A live socket,
++    // symlink or ordinary file at this path is never unlinked on startup.
++    errdefer cleanup(path);
++    if (std.posix.errno(std.posix.system.listen(fd, 128)) != .SUCCESS) return error.Unexpected;
++    return .{ .socket = .{ .handle = fd, .address = local_peer }, .options = {} };
++}
++
++pub fn cleanup(path: []const u8) void {
++    const sa = address(path) catch return;
++    _ = std.posix.system.unlink(@ptrCast(&sa.path));
++}
++
++pub fn ensureFree(io: std.Io, path: []const u8) ListenError!void {
++    var probe = try listen(path);
++    defer cleanup(path);
++    probe.deinit(io);
++}
++
++pub fn accept(server: *std.Io.net.Server) std.Io.net.Server.AcceptError!std.Io.net.Stream {
++    const rc = std.posix.system.accept(server.socket.handle, null, null);
++    const fd: std.posix.socket_t = switch (std.posix.errno(rc)) {
++        .SUCCESS => @intCast(rc),
++        .INTR => return error.Canceled,
++        .AGAIN => return error.WouldBlock,
++        .CONNABORTED => return error.ConnectionAborted,
++        .MFILE => return error.ProcessFdQuotaExceeded,
++        .NFILE => return error.SystemFdQuotaExceeded,
++        .NOMEM, .NOBUFS => return error.SystemResources,
++        else => return error.Unexpected,
++    };
++    errdefer _ = std.posix.system.close(fd);
++    if (std.posix.errno(std.posix.system.fcntl(fd, std.posix.F.SETFD, @as(usize, std.posix.FD_CLOEXEC))) != .SUCCESS) return error.Unexpected;
++    return .{ .socket = .{ .handle = fd, .address = local_peer } };
++}
++
++test "UNIX listener: path validation and local peer classification" {
++    try std.testing.expect(isUnix("/tmp/sushi.sock"));
++    try std.testing.expect(!isUnix("127.0.0.1"));
++    try std.testing.expectError(error.NameTooLong, address(&(@as([104]u8, @splat('x')))));
++    try std.testing.expectError(error.InvalidHost, address("x\x00.sock"));
++    const sa = try address("/tmp/sushi.sock");
++    try std.testing.expectEqual(std.posix.AF.UNIX, sa.family);
++    try std.testing.expectEqualStrings("/tmp/sushi.sock", std.mem.sliceTo(&sa.path, 0));
++    try std.testing.expectEqual(@as(u8, 127), local_peer.ip4.bytes[0]);
++}
++
++test "UNIX listener: private bind, collision refusal and probe cleanup" {
++    const io = std.testing.io;
++    var temp = std.testing.tmpDir(.{});
++    defer temp.cleanup();
++    var path_buf: [96]u8 = undefined;
++    const path = try std.fmt.bufPrint(&path_buf, ".zig-cache/tmp/{s}/sushi.sock", .{temp.sub_path});
++    try ensureFree(io, path);
++    try std.testing.expectError(error.FileNotFound, temp.dir.statFile(io, "sushi.sock", .{}));
++    {
++        var server = try listen(path);
++        defer cleanup(path);
++        defer server.deinit(io);
++        const info = try temp.dir.statFile(io, "sushi.sock", .{});
++        try std.testing.expectEqual(.unix_domain_socket, info.kind);
++        try std.testing.expectEqual(@as(std.posix.mode_t, 0o600), info.permissions.toMode() & 0o777);
++        try std.testing.expectError(error.AddressInUse, listen(path));
++        try std.testing.expectError(error.AddressInUse, ensureFree(io, path));
++        _ = try temp.dir.statFile(io, "sushi.sock", .{});
++    }
++    try std.testing.expectError(error.FileNotFound, temp.dir.statFile(io, "sushi.sock", .{}));
++}

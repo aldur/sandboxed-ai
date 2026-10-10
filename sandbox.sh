@@ -11,7 +11,8 @@
 # Subcommand → seatbelt profile (all import common.sb; the servers also
 # import net-tcp.sb or net-unix.sb, chosen by a .sock --host):
 #   llama-server → llama-server.sb    mlx-server → mlx-server.sb
-#   mtplx        → mtplx.sb           llm        → llm.sb
+#   mtplx        → mtplx.sb           sushi      → sushi.sb
+#   llm          → llm.sb
 #   pi           → pi.sb
 #
 # sandbox-exec -D values are literal strings consumed by (param ...) in the
@@ -183,6 +184,7 @@ Commands:
   mlx-server    Start mlx_lm.server (sandboxed)
   mtplx         Start the MTPLX server (sandboxed); \`mtplx tune\` runs its
                 draft-depth calibration (sandboxed, no network)
+  sushi         Start the Sushi server (sandboxed)
   pi            Start pi (pi-coding-agent) with the llama-cpp plugin (sandboxed)
   llm           Run llm CLI (sandboxed)
 
@@ -238,6 +240,20 @@ mtplx options:
   --port PORT           TCP port to bind (default 8080).
   All other flags are passed through to \`mtplx serve\` (or \`mtplx tune\`).
 
+sushi options:
+  serve                 Optional leading word (serving is the default).
+  --model SPEC          Local model directory or HF repo of a Sushi model
+                        (e.g. beamster/Qwen3.8-Flash-Next-Sushi-2bpw).
+                        The full repo downloads host-side; the server then
+                        runs offline with read-only weights.
+  --drafter SPEC        Optional draft model, same directory/repo grammar.
+  --socket              Use a private socket at $STATE_DIR/sockets/sushi.sock.
+  --host ADDR           TCP address to bind (default 127.0.0.1), or a
+                        UNIX domain socket when ADDR ends in .sock.
+  --port PORT           TCP port to bind (default 8080).
+  UNIX sockets require the patched Nix package.
+  All other flags are passed through to \`sushi serve\`.
+
 pi options:
   -w, --workspace DIR   Workspace directory (default: current directory)
   --port PORT           Port of the running server (default 8080)
@@ -257,7 +273,7 @@ Environment:
   SANDBOXED_AI_PROG  Program name shown in this help (set by the Nix wrapper)
   MODEL              Model spec (overridden by --model)
   MMPROJ             Projector spec (overridden by --mmproj)
-  LLAMA_SERVER, LLAMA_BENCH, MLX_SERVER, MLX_VLM_SERVER, MTPLX, PI, LLM, CURL
+  LLAMA_SERVER, LLAMA_BENCH, MLX_SERVER, MLX_VLM_SERVER, MTPLX, SUSHI, PI, LLM, CURL
                      Explicit binary paths (fallback: PATH lookup)
   PI_LLAMA_DIR       Dir holding the pi llama-cpp plugin's index.ts
                      (set by the Nix wrapper; required for the pi command)
@@ -1331,6 +1347,168 @@ cmd_mtplx() {
     "$mtplx_bin" "${server_args[@]}" "${extra_args[@]}"
 }
 
+# Sushi is a native binary with its MLX dylibs and metallib beside it.
+# Unlike the Python servers it needs no interpreter or process-fork grant.
+# Its own downloader and agent launcher are outside this command: models
+# resolve through hf.sh, and the only entry point is `sushi serve`.
+cmd_sushi() {
+  [[ "${1:-}" != serve ]] || shift
+  local -a extra_args=()
+  local want_help="" want_version="" tcp_host=127.0.0.1 socket="" arg="" draft_spec="" api_key=""
+  [[ $# -gt 0 ]] || want_help=1
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+    --model | --model=* | --drafter | --drafter=* | --host | --host=* | --port | --port=*)
+      local flag="${1%%=*}"
+      if [[ "$1" == *=* ]]; then
+        arg="${1#*=}"
+        [[ -n "$arg" ]] || die "$flag requires an argument"
+        shift
+      else
+        need_arg "$@"
+        arg="$2"
+        shift 2
+      fi
+      case "$flag" in
+      --model) MODEL="$arg" ;;
+      --drafter) draft_spec="$arg" ;;
+      --host)
+        if [[ "$arg" == *.sock ]]; then
+          socket="$arg"
+          tcp_host=""
+        else
+          tcp_host="$arg"
+          socket=""
+        fi
+        ;;
+      --port)
+        [[ "$arg" =~ ^[0-9]+$ ]] || die "not a port number: $arg"
+        ((10#$arg >= 1 && 10#$arg <= 65535)) || die "port must be between 1 and 65535: $arg"
+        PORT="$arg"
+        ;;
+      esac
+      ;;
+    --socket)
+      socket="$STATE_DIR/sockets/sushi.sock"
+      tcp_host=""
+      shift
+      ;;
+    --api-key-env)
+      need_arg "$@"
+      [[ "$2" =~ ^[a-zA-Z_][a-zA-Z0-9_]*$ ]] || die "not an environment variable name: $2"
+      # Preserve an explicitly requested key without admitting arbitrary
+      # caller environment names (DYLD_*, etc.) to the allowlist.
+      api_key="${!2:-}"
+      extra_args+=(--api-key-env SUSHI_API_KEY)
+      shift 2
+      ;;
+    -h | --help)
+      want_help=1
+      extra_args+=("$1")
+      shift
+      ;;
+    --version)
+      want_version=1
+      shift
+      ;;
+    *)
+      extra_args+=("$1")
+      shift
+      ;;
+    esac
+  done
+  local help_only=""
+  if [[ -n "$want_version" ]]; then
+    help_only=1
+  elif [[ -z "${MODEL:-}" ]]; then
+    [[ -n "$want_help" ]] || die "no model specified — use --model or set MODEL env var"
+    help_only=1
+  fi
+  select_net "$socket"
+  local net_self_sb="$PROFILES_DIR/net-none.sb"
+  if [[ -n "$socket" ]]; then
+    socket="$NET_TARGET"
+    # Darwin's sockaddr_un has 104 bytes, including the terminating NUL.
+    local LC_ALL=C
+    [[ ${#socket} -lt 104 ]] || die "UNIX socket path exceeds 103 bytes: $socket"
+  else
+    net_self_sb="$PROFILES_DIR/net-self-tcp.sb"
+  fi
+
+  local sushi_bin pkg_store model_dir=/dev/null draft_dir=/dev/null
+  sushi_bin="$(resolve_binary "${SUSHI:-}" sushi SUSHI)"
+  pkg_store="$(pkg_store_for "$sushi_bin")"
+  if [[ -z "$help_only" ]]; then
+    model_dir="$(resolve_mlx_model "$MODEL")"
+    draft_dir="$model_dir"
+    [[ -z "$draft_spec" ]] || draft_dir="$(resolve_mlx_model "$draft_spec")"
+  fi
+
+  TMPDIR="$TMPDIR/sushi"
+  CACHE_DIR="$CACHE_DIR/sushi"
+  mkdir -p "$CACHE_DIR" "$TMPDIR"
+  export HOME="$CACHE_DIR/sushi-home" TMPDIR
+  mkdir -p "$HOME/.sushi/models"
+  # Enforce offline mode even if the caller supplied an update setting.
+  export SUSHI_NO_UPDATE_CHECK=1 SUSHI_API_KEY="$api_key"
+  resolve_darwin_dirs
+  resolve_stdio
+
+  local -a server_args
+  if [[ -n "$want_version" ]]; then
+    server_args=(--version)
+    extra_args=()
+  elif [[ -n "$help_only" ]]; then
+    server_args=(serve --help)
+    extra_args=()
+  else
+    printf 'Starting sandboxed sushi:\n'
+    info "binary:" "$sushi_bin"
+    info "model:" "$model_dir"
+    [[ -z "$draft_spec" ]] || info "drafter:" "$draft_dir"
+    if [[ -n "$socket" ]]; then
+      info "socket:" "$socket"
+    else
+      info "port:" "$PORT"
+    fi
+    info "extra:" "${extra_args[*]:-none}"
+    printf '\n'
+    # Use the shared 8080 default so pi/llm can connect without retargeting.
+    # Logging goes through the host's --log machinery by default. Sushi's
+    # own --log-file can still write inside its isolated cache.
+    server_args=(serve --model "$model_dir" --host "${socket:-$tcp_host}" --port "$PORT"
+      --no-update-check --log-file off)
+    [[ -z "$draft_spec" ]] || server_args+=(--drafter "$draft_dir")
+  fi
+
+  cd "$CACHE_DIR"
+  local -a sbx_env
+  sandbox_env sbx_env HOME TMPDIR SUSHI_NO_UPDATE_CHECK SUSHI_API_KEY
+  exec "${sbx_env[@]}" "$SANDBOX_EXEC" \
+    -D COMMON_SB="$PROFILES_DIR/common.sb" \
+    -D SERVER_SB="$PROFILES_DIR/server.sb" \
+    -D NET_SB="$NET_SB" \
+    -D NET_TARGET="$NET_TARGET" \
+    -D NET_SELF_SB="$net_self_sb" \
+    -D NET_SELF="localhost:$PORT" \
+    -D PKG_STORE="$pkg_store" \
+    -D HOME_DIR="$HOME_DIR" \
+    -D HOME_PARENT="$HOME_PARENT" \
+    -D STDOUT_PATH="$STDOUT_PATH" \
+    -D STDERR_PATH="$STDERR_PATH" \
+    -D DARWIN_USER_TEMP_DIR="$DARWIN_USER_TEMP_DIR" \
+    -D DARWIN_METAL_CACHE="$DARWIN_METAL_CACHE" \
+    -D DARWIN_METALFE_CACHE="$DARWIN_METALFE_CACHE" \
+    -D SUSHI="$sushi_bin" \
+    -D MODEL_DIR="$model_dir" \
+    -D DRAFTER_DIR="$draft_dir" \
+    -D CACHE_DIR="$CACHE_DIR" \
+    -D TOOL_SB="$PROFILES_DIR/sushi.sb" \
+    -D LOG_DIR="$(canon "$STATE_DIR")/logs" \
+    -f "$PROFILES_DIR/run.sb" \
+    "$sushi_bin" "${server_args[@]}" "${extra_args[@]}"
+}
+
 cmd_pi() {
   parse_workspace "$@"
 
@@ -1476,7 +1654,7 @@ fi
 cmd="$1"
 shift
 case "$cmd" in
-llama-server | llama-bench | mlx-server | mtplx | pi | llm)
+llama-server | llama-bench | mlx-server | mtplx | sushi | pi | llm)
   private_state_dir
   if ((log_enabled)); then start_logging "$cmd"; fi
   ;;
@@ -1486,6 +1664,7 @@ llama-server) cmd_llama "$@" ;;
 llama-bench) cmd_bench "$@" ;;
 mlx-server) cmd_mlx "$@" ;;
 mtplx) cmd_mtplx "$@" ;;
+sushi) cmd_sushi "$@" ;;
 pi) cmd_pi "$@" ;;
 llm) cmd_llm "$@" ;;
 -h | --help | help) usage ;;

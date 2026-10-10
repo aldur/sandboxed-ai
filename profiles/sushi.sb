@@ -1,0 +1,26 @@
+; vim:ft=scheme
+(version 1)
+(deny default)
+
+;; Sushi — native Zig + MLX (Metal). The release keeps its dylibs and
+;; metallib beside the executable; common.sb grants those in PKG_STORE.
+(import (param "COMMON_SB"))
+(import (param "SERVER_SB"))
+
+(allow process-exec
+  (literal (param "SUSHI")))
+
+;; An optional external DFlash2 assistant is resolved host-side too.
+(allow file-read*
+  (subpath (param "DRAFTER_DIR")))
+
+;; Sushi's planners read the GPU limit and OS/chip versions directly
+;; through libc (no sysctl subprocess). These contain no user identifier.
+(allow sysctl-read
+  (sysctl-name "iogpu.wired_limit_mb")
+  (sysctl-name "kern.osproductversion")
+  (sysctl-name "machdep.cpu.brand_string"))
+
+;; TCP startup checks its own port. UNIX mode selects net-none.sb instead
+;; so no TCP connect is granted after server.sb's outbound deny.
+(import (param "NET_SELF_SB"))

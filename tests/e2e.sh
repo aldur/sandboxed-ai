@@ -12,6 +12,8 @@
 #   TEST_MLX_MODEL  (default mlx-community/SmolLM-135M-Instruct-4bit)
 #   TEST_MTPLX_MODEL (no default: the MTPLX catalog has no tiny model, so
 #                     the mtplx test is opt-in and skips when unset)
+#   TEST_SUSHI_MODEL (no default: Sushi packs are large, so inference is
+#                     opt-in; wrapper/profile tests run without a pack)
 #
 # Generation asserts on transport (HTTP 200, a completion comes back), not
 # on model output: the 135M test models are too small to follow
@@ -125,12 +127,13 @@ LLAMA_BENCH="$(flake_bin llama-cpp llama-bench LLAMA_BENCH)"
 MLX_SERVER="$(flake_bin mlx-lm mlx_lm.server MLX_SERVER)"
 MLX_VLM_SERVER="$(flake_bin mlx-vlm mlx_vlm.server MLX_VLM_SERVER)"
 MTPLX="$(flake_bin mtplx mtplx MTPLX)"
+SUSHI="$(flake_bin sushi sushi SUSHI)"
 LLM="$(flake_bin llm llm LLM)"
 # Match the raw executable in sandboxed-ai's PATH. cmd_pi loads the pinned
 # pi-llama plugin explicitly; the separate `pi` flake output is a dotfiles
 # bundle with additional plugins that are outside this suite's scope.
 PI="$(flake_bin pi-coding-agent pi PI)"
-export LLAMA_SERVER LLAMA_BENCH MLX_SERVER MLX_VLM_SERVER MTPLX LLM PI
+export LLAMA_SERVER LLAMA_BENCH MLX_SERVER MLX_VLM_SERVER MTPLX SUSHI LLM PI
 if [[ -z "${PI_LLAMA_DIR:-}" ]] && command -v nix >/dev/null; then
   PI_LLAMA_DIR="$(nix build --no-link --print-out-paths "$ROOT#pi-llama" 2>/dev/null)" || PI_LLAMA_DIR=""
   export PI_LLAMA_DIR
@@ -1269,6 +1272,43 @@ if [[ -n "$PY" ]]; then
   fi
 else
   skip "probe: getfqdn survives under mlx-server.sb" "no python3 in $PKG_STORE"
+fi
+
+# ── Sushi: wrapper/profile contract and opt-in inference ──
+if python3 "$ROOT/tests/sushi.py"; then
+  ok "Sushi wrapper and sandbox regression checks"
+else
+  fail "Sushi wrapper and sandbox regression checks"
+fi
+
+if [[ -n "$SUSHI" && -n "${TEST_SUSHI_MODEL:-}" ]]; then
+  start_server sushi-tcp sushi --model "$TEST_SUSHI_MODEL"
+  if wait_http "http://127.0.0.1:$PORT/health" 300; then
+    ok "Sushi (tcp) becomes healthy"
+    if chat_ok "http://127.0.0.1:$PORT/v1/chat/completions" "$WORK/sushi-chat.json"; then
+      ok "Sushi (tcp) serves a completion"
+    else
+      fail "Sushi (tcp) serves a completion" "$WORK/sushi-chat.json"
+    fi
+  else
+    fail "Sushi (tcp) becomes healthy" "$WORK/sushi-tcp.log"
+  fi
+  stop_server
+  SUSHI_SOCK="$STATE_DIR/sockets/sushi.sock"
+  start_server sushi-sock sushi --model "$TEST_SUSHI_MODEL" --socket
+  if wait_http "--unix-socket $SUSHI_SOCK http://localhost/health" 300; then
+    ok "Sushi (unix socket) becomes healthy"
+    if chat_ok "--unix-socket $SUSHI_SOCK http://localhost/v1/chat/completions" "$WORK/sushi-sock-chat.json"; then
+      ok "Sushi (unix socket) serves a completion"
+    else
+      fail "Sushi (unix socket) serves a completion" "$WORK/sushi-sock-chat.json"
+    fi
+  else
+    fail "Sushi (unix socket) becomes healthy" "$WORK/sushi-sock.log"
+  fi
+  stop_server
+else
+  skip "Sushi inference" "macOS >= 26.2 and TEST_SUSHI_MODEL required"
 fi
 
 # ── Summary ───────────────────────────────────────────────
