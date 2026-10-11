@@ -1451,6 +1451,11 @@ cmd_sushi() {
   mkdir -p "$HOME/.sushi/models"
   # Enforce offline mode even if the caller supplied an update setting.
   export SUSHI_NO_UPDATE_CHECK=1 SUSHI_API_KEY="$api_key"
+  # The SSD prefix cache hard-links shared chunks into a new entry when a
+  # turn diverges from a cached prefix. Under the sandbox that linkat kills
+  # the server (EXC_CRASH SIGKILL, termination namespace SANDBOX) mid-commit.
+  # Write the chunks instead; the cache itself stays on.
+  export SUSHI_SSD_CHUNK_SHARE=0
   resolve_darwin_dirs
   resolve_stdio
 
@@ -1483,7 +1488,7 @@ cmd_sushi() {
 
   cd "$CACHE_DIR"
   local -a sbx_env
-  sandbox_env sbx_env HOME TMPDIR SUSHI_NO_UPDATE_CHECK SUSHI_API_KEY
+  sandbox_env sbx_env HOME TMPDIR SUSHI_NO_UPDATE_CHECK SUSHI_API_KEY SUSHI_SSD_CHUNK_SHARE
   exec "${sbx_env[@]}" "$SANDBOX_EXEC" \
     -D COMMON_SB="$PROFILES_DIR/common.sb" \
     -D SERVER_SB="$PROFILES_DIR/server.sb" \
