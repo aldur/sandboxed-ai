@@ -64,6 +64,123 @@
 
       llm = pkgs.llm.withPlugins { llm-llama-server = true; };
 
+      # Upstream requires Zig 0.17, newer than nixpkgs' compiler. Preserve
+      # the official toolchain layout so Zig finds its bundled libraries.
+      sushi-zig = pkgs.stdenvNoCC.mkDerivation {
+        pname = "sushi-zig";
+        version = "0.17.0";
+        src = pkgs.fetchurl {
+          url = "https://ziglang.org/download/0.17.0/zig-aarch64-macos-0.17.0.tar.xz";
+          hash = "sha256-tgfpuSNHkKAIEWrlvbccYkO4S5+0KlOp5w/eQcBsU2o=";
+        };
+        dontConfigure = true;
+        dontBuild = true;
+        dontFixup = true;
+        installPhase = ''
+          mkdir -p $out/libexec/zig $out/bin
+          cp -R zig lib $out/libexec/zig/
+          ln -s $out/libexec/zig/zig $out/bin/zig
+        '';
+      };
+
+      # Rebuild Sushi with a native UNIX listener. Reuse its signed MLX
+      # libraries and metallib: building the Metal kernels needs Apple's
+      # proprietary compiler. Runtime requires macOS >= 26.2.
+      sushi = pkgs.stdenv.mkDerivation (finalAttrs: {
+        pname = "sushi";
+        version = "1.2.1";
+        src = pkgs.fetchFromGitHub {
+          owner = "beamivalice";
+          repo = "sushi";
+          tag = "v${finalAttrs.version}";
+          hash = "sha256-9sAdKGFuzFLTujd6+n6qy1RhAp/vOqUFmNPGyAMVLHw=";
+        };
+        releaseBundle = pkgs.fetchurl {
+          url = "https://github.com/beamivalice/sushi/releases/download/v${finalAttrs.version}/sushi-bin-macos-arm64.tar.gz";
+          hash = "sha256-4SN7omLQn2JgsuwipLWOgLLyZPlsNKtbCWa04tkTIMs=";
+        };
+        patches = [ ./patches/sushi-unix-socket.patch ];
+        nativeBuildInputs = [
+          sushi-zig
+          pkgs.jq
+          pkgs.darwin.cctools
+          pkgs.darwin.sigtool
+        ];
+        buildInputs = [ pkgs.libwebp ];
+        dontConfigure = true;
+        dontFixup = true;
+        postPatch = ''
+          # Use Nix's SDK and headers; the release provides runtime dylibs.
+          substituteInPlace build.zig \
+            --replace-fail 'verifyBrewDeps(b);' "" \
+            --replace-fail '/opt/homebrew/include' '${pkgs.libwebp}/include' \
+            --replace-fail '/opt/homebrew/lib' 'lib/mlx/lib' \
+            --replace-fail 'b.fmt("{s}/System/Library/Frameworks", .{sdk})' \
+              '"/System/Library/Frameworks"' \
+            --replace-fail 'module.addIncludePath(b.path("lib/ane"));' \
+              'module.addIncludePath(b.path("lib/ane")); module.addSystemIncludePath(.{ .cwd_relative = "'"$SDKROOT"'/usr/include" });' \
+            --replace-fail '&.{ "xcrun", "--sdk", "macosx", "--show-sdk-path" }' \
+              '&.{ "print-sushi-sdk" }'
+          mkdir -p build-tools lib/mlx
+          printf '%s\n' '#!/bin/sh' 'exec printf "%s" "$SDKROOT"' > build-tools/print-sushi-sdk
+          chmod +x build-tools/print-sushi-sdk
+          export PATH="$PWD/build-tools:$PATH"
+          tar xf $releaseBundle
+          cp -R sushi-macos-arm64/lib lib/mlx/lib
+          jq -r '"mlx=" + (.mlx | split("@") | last) + " mlxc=" + .mlx_c' \
+            sushi-macos-arm64/guest.json > lib/mlx/.version
+        '';
+        buildPhase = ''
+          runHook preBuild
+          export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-global-cache"
+          mkdir -p lib/jinja_cpp/obj
+          for source in lib/jinja_cpp/*.cpp; do
+            $CXX -std=c++17 -O2 -DNDEBUG -I lib/jinja_cpp -c "$source" \
+              -o "lib/jinja_cpp/obj/$(basename "$source" .cpp).o"
+          done
+          $AR rcs lib/jinja_cpp/libjinja.a lib/jinja_cpp/obj/*.o
+          zig build -Doptimize=ReleaseFast --sysroot "$SDKROOT" -j$NIX_BUILD_CORES
+          runHook postBuild
+        '';
+        doCheck = true;
+        checkPhase = ''
+          runHook preCheck
+          zig test src/unix_listener.zig -lc -O ReleaseFast
+          runHook postCheck
+        '';
+        installPhase = ''
+          runHook preInstall
+          mkdir -p $out/libexec/sushi $out/bin
+          cp -R sushi-macos-arm64/. $out/libexec/sushi/
+          cp zig-out/bin/sushi $out/libexec/sushi/sushi
+          # A patched build has no upstream release executable identity.
+          jq '.commit = "unknown"' sushi-macos-arm64/guest.json \
+            > $out/libexec/sushi/guest.json
+          install_name_tool -change @rpath/libmlxc.dylib \
+            @executable_path/lib/libmlxc.dylib $out/libexec/sushi/sushi
+          install_name_tool -change /opt/homebrew/opt/webp/lib/libwebp.7.dylib \
+            @executable_path/lib/libwebp.dylib $out/libexec/sushi/sushi
+          codesign --force --sign - $out/libexec/sushi/sushi
+          ln -s $out/libexec/sushi/sushi $out/bin/sushi
+          runHook postInstall
+        '';
+        meta = {
+          description = "MLX inference server for Sushi quantized models on Apple Silicon";
+          homepage = "https://github.com/beamivalice/sushi";
+          license = with pkgs.lib.licenses; [
+            mit
+            asl20
+            bsd3
+          ];
+          platforms = [ "aarch64-darwin" ];
+          mainProgram = "sushi";
+          sourceProvenance = with pkgs.lib.sourceTypes; [
+            fromSource
+            binaryNativeCode
+          ];
+        };
+      });
+
       # MLX equivalent of llama-server: `mlx_lm.server` (ml-explore/mlx-lm)
       # speaks the same OpenAI-compatible HTTP API (/v1/chat/completions,
       # /v1/models, /health) on localhost.
@@ -302,6 +419,7 @@
                 mlx-lm
                 mlx-vlm
                 mtplx
+                sushi
                 pkgs.pi-coding-agent
               ]
             }
@@ -319,6 +437,7 @@
           mlx-lm
           mlx-vlm
           mtplx
+          sushi
           pi
           pi-llama
           sandboxed-ai

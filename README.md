@@ -5,6 +5,7 @@ This repository provides `sandbox-exec` profiles to run:
 1. [`llama-server`][1]
 1. [`mlx_lm.server`][5]
 1. [MTPLX][6]
+1. [Sushi][7]
 1. [`pi`][4]
 1. [`simonw/llm`][3]
 
@@ -84,6 +85,46 @@ the weights read-only. It binds `127.0.0.1:8080` by default; `--host
 the fan-control helper that `tune` normally spawns, so tuning runs with a bit
 more timing noise.
 
+### Sushi
+
+[Sushi][7] serves Sushi quantized models through OpenAI and Anthropic APIs.
+The upstream binary requires Apple Silicon and macOS 26.2 or newer.
+
+```bash
+# The Nix package includes UNIX socket support
+nix develop
+
+# Alternatively, install the upstream TCP-only build
+brew install beamivalice/tap/sushi
+
+# Download the model and serve it in the sandbox
+./sandbox.sh sushi --model beamster/Qwen3.8-Flash-Next-Sushi-2bpw --ctx-size 131072
+
+# Local model directories work too; other Sushi flags pass through
+./sandbox.sh --log sushi serve --model /path/to/sushi-model --ssd-budget-gb 18
+
+# Serve on the private default socket, or choose --host /path/to/server.sock
+sandboxed-ai sushi --model /path/to/sushi-model --socket
+curl --unix-socket "$HOME/.local/state/sandboxed-ai/sockets/sushi.sock" http://localhost/health
+```
+
+Models are downloaded and checksum-verified through the existing fetch sandbox.
+Sushi reads the weights read-only and runs offline, with its update check
+disabled. Its home and caches live under `$STATE_DIR/cache/sushi`, separate
+from the other servers. It binds `127.0.0.1:8080` by default, matching the
+`pi` and `llm` clients; `--host` and `--port` override the TCP endpoint.
+`--socket` selects `$STATE_DIR/sockets/sushi.sock`; `--host /path/to/server.sock`
+selects a custom socket. The patched Nix package serves directly on that
+owner-only socket with no TCP permissions. The upstream Homebrew build
+supports TCP; use `sandboxed-ai` from `nix develop` for UNIX sockets.
+macOS limits socket paths to 103 bytes.
+
+Use `--drafter /path/to/assistant` (or an HF repo) for an external DFlash2
+assistant. GLM packs with a shipped BF16 assistant normally build a smaller
+`dflash2/` cache inside the model directory. The read-only sandbox can reuse
+an existing cache; without one, Sushi falls back to the shipped BF16 weights
+and needs more memory. `--no-drafter` disables that assistant.
+
 ### `pi`
 
 ```bash
@@ -136,6 +177,7 @@ Commands:
   mlx-server    Start mlx_lm.server (sandboxed)
   mtplx         Start the MTPLX server (sandboxed); `mtplx tune` runs its
                 draft-depth calibration (sandboxed, no network)
+  sushi         Start the Sushi server (sandboxed)
   pi            Start pi (pi-coding-agent) with the llama-cpp plugin (sandboxed)
   llm           Run llm CLI (sandboxed)
 
@@ -191,6 +233,20 @@ mtplx options:
   --port PORT           TCP port to bind (default 8080).
   All other flags are passed through to `mtplx serve` (or `mtplx tune`).
 
+sushi options:
+  serve                 Optional leading word (serving is the default).
+  --model SPEC          Local model directory or HF repo of a Sushi model
+                        (e.g. beamster/Qwen3.8-Flash-Next-Sushi-2bpw).
+                        The full repo downloads host-side; the server then
+                        runs offline with read-only weights.
+  --drafter SPEC        Optional draft model, same directory/repo grammar.
+  --socket              Use a private socket at $STATE_DIR/sockets/sushi.sock.
+  --host ADDR           TCP address to bind (default 127.0.0.1), or a
+                        UNIX domain socket when ADDR ends in .sock.
+  --port PORT           TCP port to bind (default 8080).
+  UNIX sockets require the patched Nix package.
+  All other flags are passed through to `sushi serve`.
+
 pi options:
   -w, --workspace DIR   Workspace directory (default: current directory)
   --port PORT           Port of the running server (default 8080)
@@ -210,7 +266,7 @@ Environment:
   SANDBOXED_AI_PROG  Program name shown in this help (set by the Nix wrapper)
   MODEL              Model spec (overridden by --model)
   MMPROJ             Projector spec (overridden by --mmproj)
-  LLAMA_SERVER, LLAMA_BENCH, MLX_SERVER, MLX_VLM_SERVER, MTPLX, PI, LLM, CURL
+  LLAMA_SERVER, LLAMA_BENCH, MLX_SERVER, MLX_VLM_SERVER, MTPLX, SUSHI, PI, LLM, CURL
                      Explicit binary paths (fallback: PATH lookup)
   PI_LLAMA_DIR       Dir holding the pi llama-cpp plugin's index.ts
                      (set by the Nix wrapper; required for the pi command)
@@ -225,3 +281,4 @@ Environment:
 [4]: https://pi.dev/
 [5]: https://github.com/ml-explore/mlx-lm
 [6]: https://github.com/youssofal/MTPLX
+[7]: https://github.com/beamivalice/sushi
