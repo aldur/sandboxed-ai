@@ -101,6 +101,24 @@ to the workspace (the current directory by default). See [this blog post][0]
 for how to run un-sandboxed agents in a Linux VM that connect to the local
 server instance.
 
+## Time Machine
+
+Downloaded models, server caches, and temporary files can take substantial
+backup space. After running a server once, exclude these directories from
+Time Machine:
+
+```bash
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/sandboxed-ai"
+tmutil addexclusion \
+  "${SANDBOXED_AI_MODELS:-$state_dir/models}" \
+  "$state_dir/cache" \
+  "$state_dir/tmp"
+```
+
+These paths default to `~/.local/state/sandboxed-ai/{models,cache,tmp}` and
+honor `XDG_STATE_HOME` and `SANDBOXED_AI_MODELS`. Agent homes and logs remain
+eligible for backup.
+
 ## Logs
 
 Use `--log` to save stdout and stderr while still displaying them:
