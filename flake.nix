@@ -33,8 +33,10 @@
         }).overrideAttrs
           (
             finalAttrs: old: {
-              # Optionally: bump to a more recent version than nixpkgs'
+              # Track upstream releases independently of nixpkgs.
               version = "11418";
+              # nixpkgs backports target its own source version.
+              patches = [ ];
               src = pkgs.fetchFromGitHub {
                 owner = "ggml-org";
                 repo = "llama.cpp";
