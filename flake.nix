@@ -59,6 +59,9 @@
                 export NIX_ENFORCE_NO_NATIVE=0
                 ${old.preConfigure or ""}
               '';
+              # This test requires a GPU. nixpkgs disables Metal devices
+              # during checks with GGML_METAL_DEVICES=0.
+              disabledTests = (old.disabledTests or [ ]) ++ [ "test-metal-graph-optimize" ];
             }
           );
 
