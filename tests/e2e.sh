@@ -443,37 +443,59 @@ fi
 
 # ── pi's interactive TUI (raw mode, on a real pty) ────────
 # `pi -p` never enters raw mode, so it would not notice a missing terminal
-# or input grant. Drive the full TUI on a pty instead and assert it renders
-# and accepts a keystroke.
+# or input grant. Wait for a rendered screen, then check that typed text
+# appears in the editor. The launcher banner does not mean the TUI is ready.
 if [[ -n "$PY" && -n "${PI_LLAMA_DIR:-}" && -n "$PI" ]]; then
   mkdir -p "$SCRATCH/tui"
   if "$PY" - "$SANDBOX" "$SCRATCH/tui" >"$WORK/tui.log" 2>&1 <<'PYEOF'; then
-import os, pty, select, sys, time, re
+import errno, os, pty, re, select, signal, sys, termios, time
 sandbox, ws = sys.argv[1], sys.argv[2]
 pid, fd = pty.fork()
 if pid == 0:
+    termios.tcsetwinsize(0, (24, 80))
     os.environ["TERM"] = "xterm-256color"
     os.execv(sandbox, [sandbox, "pi", "-w", ws])
-out, deadline, sent = b"", time.time() + 30, False
-while time.time() < deadline:
-    r, _, _ = select.select([fd], [], [], 1)
-    if r:
-        try: chunk = os.read(fd, 65536)
-        except OSError: break
-        if not chunk: break
+out, deadline = b"", time.monotonic() + 30
+marker, sent_at = b"sandboxed-ai-tui", None
+ansi, rawmode, rendered, input_seen = 0, False, False, False
+try:
+    while time.monotonic() < deadline:
+        r, _, _ = select.select([fd], [], [], min(1, max(0, deadline - time.monotonic())))
+        if not r:
+            continue
+        try:
+            chunk = os.read(fd, 65536)
+        except OSError as error:
+            if error.errno == errno.EIO:
+                break
+            raise
+        if not chunk:
+            break
         out += chunk
-    if not sent and len(out) > 200:
-        time.sleep(2); os.write(fd, b"hello\r")
-        time.sleep(3); os.write(fd, b"\x03\x03"); sent = True
-try: os.kill(pid, 9)
-except ProcessLookupError: pass
-os.waitpid(pid, 0)
+        ansi = len(re.findall(rb"\x1b\[[0-9;?]*[a-zA-Z]", out))
+        rawmode = not (termios.tcgetattr(fd)[3] & (termios.ICANON | termios.ECHO))
+        rendered = ansi > 50 and rawmode
+        if sent_at is None and rendered:
+            sent_at = len(out)
+            # Do not submit a model request; only test the editor.
+            os.write(fd, marker)
+        elif sent_at is not None and marker in out[sent_at:] and rawmode:
+            input_seen = True
+            break
+finally:
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    _, status = os.waitpid(pid, 0)
+    os.close(fd)
 text = out.decode(errors="replace")
-ansi = len(re.findall(r"\x1b\[[0-9;?]*[a-zA-Z]", text))
-rawmode = bool(re.search(r"\x1b\[\?(1049|1006|25)", text))
 denied = [l for l in text.splitlines() if "not permitted" in l or "EPERM" in l]
-print("ansi=%d rawmode=%s denied=%s" % (ansi, rawmode, denied[:2]))
-sys.exit(0 if ansi > 50 and rawmode and not denied else 1)
+passed = rendered and input_seen and not denied
+print("ansi=%d rawmode=%s input_seen=%s denied=%s" % (ansi, rawmode, input_seen, denied[:2]))
+if not passed:
+    print("child_status=%d terminal_output=%r" % (os.waitstatus_to_exitcode(status), text[-4000:]))
+sys.exit(0 if passed else 1)
 PYEOF
     ok "pi renders its TUI and takes input on a pty"
   else
