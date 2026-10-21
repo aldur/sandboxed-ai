@@ -61,9 +61,14 @@
                 export NIX_ENFORCE_NO_NATIVE=0
                 ${old.preConfigure or ""}
               '';
-              # This test requires a GPU. nixpkgs disables Metal devices
-              # during checks with GGML_METAL_DEVICES=0.
-              disabledTests = (old.disabledTests or [ ]) ++ [ "test-metal-graph-optimize" ];
+              disabledTests = (old.disabledTests or [ ]) ++ [
+                # CTest adds test-download-model for this test, even when
+                # nixpkgs excludes the download test. The sandbox has no network.
+                "test-llama-context-model"
+                # This test requires a GPU. nixpkgs disables Metal devices
+                # during checks with GGML_METAL_DEVICES=0.
+                "test-metal-graph-optimize"
+              ];
             }
           );
 
