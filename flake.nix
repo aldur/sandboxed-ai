@@ -34,21 +34,21 @@
           (
             finalAttrs: old: {
               # Track upstream releases independently of nixpkgs.
-              version = "11730";
+              version = "11899";
               # nixpkgs backports target its own source version.
               patches = [ ];
               src = pkgs.fetchFromGitHub {
                 owner = "ggml-org";
                 repo = "llama.cpp";
                 tag = "b${finalAttrs.version}";
-                hash = "sha256-n1qYL9p1Zsz3giA69GGvxO2EB88CrMjStWA/KCYZPEE=";
+                hash = "sha256-RK1HFG27IiMcOx0u0uPI5ZoyTtUzKY+C7K0K9adp0AQ=";
                 leaveDotGit = true;
                 postFetch = ''
                   git -C "$out" rev-parse --short HEAD > $out/COMMIT
                   find "$out" -name .git -print0 | xargs -0 rm -rf
                 '';
               };
-              npmDepsHash = "sha256-hqYzdp1FwPhYkBP278fQXgY9NCKB6Q3P6Gko7BfP0m0=";
+              npmDepsHash = "sha256-XLtEZsSFdk+2SyfXzBp8HQ2e27PQPpDCn1YjePU1/9w=";
               cmakeFlags =
                 builtins.filter (f: builtins.match "-D(GGML_NATIVE|BUILD_SHARED_LIBS).*" f == null) (
                   old.cmakeFlags or [ ]
