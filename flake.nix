@@ -224,8 +224,14 @@
           # thus fails with ModuleNotFoundError. Export the same
           # directories as PYTHONPATH so the child process finds them.
           makeWrapperArgs = [
-            "--prefix PYTHONPATH : ${placeholder "out"}/${mlxPython.sitePackages}"
-            "--prefix PYTHONPATH : ${mlxPython.pkgs.makePythonPath propagatedBuildInputs}"
+            "--prefix"
+            "PYTHONPATH"
+            ":"
+            "${placeholder "out"}/${mlxPython.sitePackages}"
+            "--prefix"
+            "PYTHONPATH"
+            ":"
+            "${mlxPython.pkgs.makePythonPath propagatedBuildInputs}"
           ];
           # Build the vendored vllm-metal paged-attention extension now,
           # with mtplx's own build script. The runtime sandbox denies
