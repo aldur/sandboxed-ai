@@ -95,6 +95,15 @@
           (final: prev: {
             pythonPackagesExtensions = prev.pythonPackagesExtensions ++ [
               (pyFinal: pyPrev: {
+                mlx = pyPrev.mlx.overrideAttrs (old: {
+                  # The upstream hook exits before signing and import checks.
+                  # Keep its exit in a subshell so those steps can run.
+                  postFixup = ''
+                    (
+                      ${old.postFixup or ""}
+                    )
+                  '';
+                });
                 mlx-lm = pyPrev.mlx-lm.overrideAttrs (old: {
                   patches = (old.patches or [ ]) ++ [ ./patches/mlx-lm-unix-socket.patch ];
                 });
