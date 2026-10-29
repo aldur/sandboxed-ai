@@ -95,6 +95,18 @@
           (final: prev: {
             pythonPackagesExtensions = prev.pythonPackagesExtensions ++ [
               (pyFinal: pyPrev: {
+                filelock = pyPrev.filelock.overrideAttrs (old: {
+                  # filelock 3.30+ tests hard links during import. Use CPython's
+                  # capability metadata so imports do not create files.
+                  patches =
+                    (old.patches or [ ])
+                    ++ pkgs.lib.optional (pkgs.lib.versionAtLeast old.version "3.30") ./patches/filelock-no-import-probe.patch;
+                  postCheck = ''
+                    ${old.postCheck or ""}
+                    PYTHONPATH="$out/${pyFinal.python.sitePackages}:$PYTHONPATH" \
+                      python ${./tests/filelock-import.py}
+                  '';
+                });
                 mlx = pyPrev.mlx.overrideAttrs (old: {
                   # The upstream hook exits before signing and import checks.
                   # Keep its exit in a subshell so those steps can run.

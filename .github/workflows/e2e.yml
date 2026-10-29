@@ -59,7 +59,7 @@ jobs:
             })
           ')"
           echo '::group::MLX startup with the sandbox'
-          MLX_SERVER="$traced/bin/mlx_lm.server" ./sandbox.sh mlx-server --help || true
+          MLX_SERVER="$traced/bin/mlx_lm.server" nix develop .#e2e --command ./sandbox.sh mlx-server --help || true
           echo '::endgroup::'
           echo '::group::MLX startup without the sandbox'
           "$traced/bin/mlx_lm.server" --help || true
