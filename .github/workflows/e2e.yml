@@ -42,3 +42,37 @@ jobs:
         env:
           SANDBOXED_AI_TEST_COLD_METAL: "1"
         run: nix develop .#e2e --command tests/e2e.sh
+
+      - name: Trace MLX startup after a failure
+        if: failure()
+        env:
+          HF_HUB_OFFLINE: "1"
+        run: |
+          traced="$(nix build --impure --no-link --print-out-paths --expr '
+            let
+              flake = builtins.getFlake (toString ./.);
+            in
+            flake.packages.aarch64-darwin.mlx-lm.overrideAttrs (old: {
+              makeWrapperArgs = (old.makeWrapperArgs or []) ++ [
+                "--set" "PYTHONVERBOSE" "1"
+              ];
+            })
+          ')"
+          echo '::group::MLX startup with the sandbox'
+          MLX_SERVER="$traced/bin/mlx_lm.server" ./sandbox.sh mlx-server --help || true
+          echo '::endgroup::'
+          echo '::group::MLX startup without the sandbox'
+          "$traced/bin/mlx_lm.server" --help || true
+          echo '::endgroup::'
+
+      - name: Show macOS failure reports
+        if: failure()
+        run: |
+          sudo /usr/bin/log show --last 10m --style compact \
+            --predicate 'process == "sandboxd" OR eventMessage CONTAINS[c] "Sandbox:" OR eventMessage CONTAINS[c] "code signing" OR eventMessage CONTAINS[c] "memorystatus"'
+          for reports in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
+            if [ -d "$reports" ]; then
+              sudo find "$reports" -type f -mmin -10 \
+                \( -iname 'python*.ips' -o -iname 'python*.crash' \) -exec cat {} +
+            fi
+          done
