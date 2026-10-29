@@ -86,50 +86,50 @@
       # cache hits — stay untouched by the python package-set extensions.
       pkgsMlx = import nixpkgs {
         inherit system;
-        overlays = [
-          dotfiles.overlays.mlx
-          # Serve on a UNIX domain socket when --host ends in .sock,
-          # mirroring llama-server's convention (see sandbox.sh --host).
-          # Applied inside the package set — not on the leaf application — so
-          # mlx-vlm, which depends on mlx-lm, shares the same patched build.
-          (final: prev: {
-            pythonPackagesExtensions = prev.pythonPackagesExtensions ++ [
-              (pyFinal: pyPrev: {
-                filelock = pyPrev.filelock.overrideAttrs (old: {
-                  # filelock 3.30+ tests hard links during import. Use CPython's
-                  # capability metadata so imports do not create files.
-                  patches =
-                    (old.patches or [ ])
-                    ++ pkgs.lib.optional (pkgs.lib.versionAtLeast old.version "3.30") ./patches/filelock-no-import-probe.patch;
-                  postCheck = ''
-                    ${old.postCheck or ""}
-                    PYTHONPATH="$out/${pyFinal.python.sitePackages}:$PYTHONPATH" \
-                      python ${./tests/filelock-import.py}
-                  '';
-                });
-                mlx = pyPrev.mlx.overrideAttrs (old: {
-                  # The upstream hook exits before signing and import checks.
-                  # Keep its exit in a subshell so those steps can run.
-                  postFixup = ''
-                    (
-                      ${old.postFixup or ""}
-                    )
-                  '';
-                });
-                mlx-lm = pyPrev.mlx-lm.overrideAttrs (old: {
-                  patches = (old.patches or [ ]) ++ [ ./patches/mlx-lm-unix-socket.patch ];
-                });
-              })
-            ];
-          })
-        ];
+        overlays = [ dotfiles.overlays.mlx ];
       };
 
-      # The interpreter whose package set carries the Metal wheel. Selected by
-      # the overlay (`mlx-python`) to match the CPython the wheel hash is
-      # pinned for — not hardcoded here, so a wheel/Python bump in dotfiles
-      # carries over with the next flake update.
-      mlxPython = pkgsMlx.mlx-python;
+      # The overlay selects the Python version for the pinned Metal wheel.
+      # Apply local fixes only to this interpreter so build tools can use
+      # cached Python packages.
+      mlxPython = pkgsMlx.mlx-python.override {
+        self = mlxPython;
+        packageOverrides = _: pyPrev: {
+          mlx = pyPrev.mlx.overrideAttrs (old: {
+            # The upstream hook exits before signing and import checks.
+            # Keep its exit in a subshell so those steps can run.
+            postFixup = ''
+              (
+                ${old.postFixup or ""}
+              )
+            '';
+          });
+          # mlx-vlm and mtplx must use the same socket patch.
+          mlx-lm = pyPrev.mlx-lm.overrideAttrs (old: {
+            patches = (old.patches or [ ]) ++ [ ./patches/mlx-lm-unix-socket.patch ];
+            makeWrapperArgs = (old.makeWrapperArgs or [ ]) ++ filelockWrapperArgs;
+          });
+        };
+      };
+
+      # Load the patched module through the server wrappers. An override in
+      # the Python package set also rebuilds PyTorch and build tools.
+      filelock = mlxPython.pkgs.filelock.overrideAttrs (old: {
+        patches = (old.patches or [ ]) ++ [ ./patches/filelock-no-import-probe.patch ];
+        postCheck = ''
+          ${old.postCheck or ""}
+          PYTHONPATH="$out/${mlxPython.sitePackages}:$PYTHONPATH" \
+            python ${./tests/filelock-import.py}
+        '';
+      });
+      filelockWrapperArgs =
+        pkgs.lib.optionals (pkgs.lib.versionAtLeast mlxPython.pkgs.filelock.version "3.30")
+          [
+            "--prefix"
+            "PYTHONPATH"
+            ":"
+            "${filelock}/${mlxPython.sitePackages}"
+          ];
 
       # `mlx_lm.server` (and the rest of the mlx_lm.* CLI) on PATH.
       mlx-lm = mlxPython.pkgs.toPythonApplication mlxPython.pkgs.mlx-lm;
@@ -139,6 +139,7 @@
       # whose config carries a vision tower.
       mlx-vlm = mlxPython.pkgs.toPythonApplication (
         mlxPython.pkgs.mlx-vlm.overrideAttrs (old: {
+          makeWrapperArgs = (old.makeWrapperArgs or [ ]) ++ filelockWrapperArgs;
           propagatedBuildInputs = (old.propagatedBuildInputs or [ ]) ++ [
             mlxPython.pkgs.torch
             mlxPython.pkgs.torchvision
@@ -253,7 +254,8 @@
             "PYTHONPATH"
             ":"
             "${mlxPython.pkgs.makePythonPath propagatedBuildInputs}"
-          ];
+          ]
+          ++ filelockWrapperArgs;
           # Build the vendored vllm-metal paged-attention extension now,
           # with mtplx's own build script. The runtime sandbox denies
           # compilers, so the JIT can never run there; sandbox.sh seeds
