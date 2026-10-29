@@ -1,0 +1,11 @@
+--- a/src/filelock/_strict.py
++++ b/src/filelock/_strict.py
+@@ -76,7 +76,7 @@
+     return True
+ 
+ 
+-_LINK_HONORS_FOLLOW_SYMLINKS: Final[bool] = _probe_link_follow_symlinks()
++_LINK_HONORS_FOLLOW_SYMLINKS: Final[bool] = _HAS_LINK and os.link in os.supports_follow_symlinks
+ 
+ 
+ def _probe_hard_link_unsupported_errnos() -> frozenset[int]:
