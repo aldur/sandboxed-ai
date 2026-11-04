@@ -168,7 +168,9 @@
           ];
           # nixpkgs marks 0.4.4 broken against mlx 0.32; the compatibility
           # backport and test exclusion above address that in this build.
-          meta = (old.meta or { }) // { broken = false; };
+          meta = (old.meta or { }) // {
+            broken = false;
+          };
         })
       );
 
@@ -302,58 +304,68 @@
       # caches, per-tool homes) lives under $XDG_STATE_HOME/sandboxed-ai.
       # Named `sandboxed-ai`, not `sandbox`, to avoid colliding with shells that
       # already define a `sandbox` abbreviation/function.
-      sandboxed-ai = pkgs.stdenv.mkDerivation {
-        pname = "sandboxed-ai";
-        version = "0.2.0";
+      mkSandboxedAi =
+        engines:
+        pkgs.stdenv.mkDerivation {
+          pname = "sandboxed-ai";
+          version = "0.2.0";
 
-        src = pkgs.lib.fileset.toSource {
-          root = ./.;
-          # sandbox.sh plus every seatbelt profile — one filter, so a new
-          # profile snippet is picked up here and by installPhase's glob
-          # without touching this file.
-          fileset = pkgs.lib.fileset.unions [
-            ./sandbox.sh
-            ./hf.sh
-            ./logging.sh
-            (pkgs.lib.fileset.fileFilter (f: f.hasExt "sb") ./profiles)
-          ];
+          src = pkgs.lib.fileset.toSource {
+            root = ./.;
+            # sandbox.sh plus every seatbelt profile — one filter, so a new
+            # profile snippet is picked up here and by installPhase's glob
+            # without touching this file.
+            fileset = pkgs.lib.fileset.unions [
+              ./sandbox.sh
+              ./hf.sh
+              ./logging.sh
+              (pkgs.lib.fileset.fileFilter (f: f.hasExt "sb") ./profiles)
+            ];
+          };
+
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+          dontConfigure = true;
+          dontBuild = true;
+
+          installPhase = ''
+            runHook preInstall
+            libexec=$out/libexec/sandboxed-ai
+            install -Dm755 sandbox.sh $libexec/sandbox.sh
+            install -Dm444 hf.sh $libexec/hf.sh
+            install -Dm444 logging.sh $libexec/logging.sh
+            install -Dm444 -t $libexec/profiles profiles/*.sb
+            makeWrapper $libexec/sandbox.sh $out/bin/sandboxed-ai \
+              --set SANDBOXED_AI_PROG sandboxed-ai \
+              --set PI_LLAMA_DIR ${pi-llama} \
+              --prefix PATH : ${
+                pkgs.lib.makeBinPath (
+                  [
+                    pkgs.bash
+                    pkgs.coreutils
+                    pkgs.curl
+                    pkgs.findutils
+                    pkgs.gnugrep
+                    pkgs.gnused
+                    llm
+                    pkgs.pi-coding-agent
+                  ]
+                  ++ engines
+                )
+              }
+            runHook postInstall
+          '';
+
+          meta.mainProgram = "sandboxed-ai";
         };
 
-        nativeBuildInputs = [ pkgs.makeWrapper ];
-        dontConfigure = true;
-        dontBuild = true;
+      sandboxed-ai = mkSandboxedAi [
+        llama-cpp
+        mlx-lm
+        mlx-vlm
+        mtplx
+      ];
 
-        installPhase = ''
-          runHook preInstall
-          libexec=$out/libexec/sandboxed-ai
-          install -Dm755 sandbox.sh $libexec/sandbox.sh
-          install -Dm444 hf.sh $libexec/hf.sh
-          install -Dm444 logging.sh $libexec/logging.sh
-          install -Dm444 -t $libexec/profiles profiles/*.sb
-          makeWrapper $libexec/sandbox.sh $out/bin/sandboxed-ai \
-            --set SANDBOXED_AI_PROG sandboxed-ai \
-            --set PI_LLAMA_DIR ${pi-llama} \
-            --prefix PATH : ${
-              pkgs.lib.makeBinPath [
-                pkgs.bash
-                pkgs.coreutils
-                pkgs.curl
-                pkgs.findutils
-                pkgs.gnugrep
-                pkgs.gnused
-                llama-cpp
-                llm
-                mlx-lm
-                mlx-vlm
-                mtplx
-                pkgs.pi-coding-agent
-              ]
-            }
-          runHook postInstall
-        '';
-
-        meta.mainProgram = "sandboxed-ai";
-      };
+      mkDevShell = engines: pkgs.mkShell { packages = [ (mkSandboxedAi engines) ]; };
     in
     {
       packages.${system} = {
@@ -376,13 +388,16 @@
         default = sandboxed-ai;
       };
 
-      # Only the sandboxed entry point, on purpose: the wrapper pins its
-      # tool binaries via its own PATH prefix, so neither shell needs to
-      # name — or put on PATH — any binary that would run outside a
-      # sandbox. The e2e shell adds what tests/e2e.sh itself runs (the
-      # suite resolves the model toolchain from the flake, not from PATH).
+      # Each shell includes the launcher with its selected engines.
+      # The e2e shell includes all engines and the test tools.
       devShells.${system} = {
-        default = pkgs.mkShell { packages = [ sandboxed-ai ]; };
+        default = mkDevShell [ llama-cpp ];
+        mlx-lm = mkDevShell [ mlx-lm ];
+        mlx-vlm = mkDevShell [
+          mlx-lm
+          mlx-vlm
+        ];
+        mtplx = mkDevShell [ mtplx ];
         e2e = pkgs.mkShell {
           packages = [
             sandboxed-ai

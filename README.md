@@ -20,6 +20,11 @@ See [this blog post][0] for background, more info, and Qwen3.5 test-runs.
 > llama-server` or `nix shell github:aldur/sandboxed-ai` to bring
 > `sandboxed-ai`, `pi`, etc into PATH.
 
+`nix develop` includes llama.cpp and the client tools. Select another engine
+with `nix develop .#mlx-lm`, `nix develop .#mlx-vlm`, or
+`nix develop .#mtplx`. The `mlx-vlm` shell also includes `mlx-lm`.
+Use `nix develop .#e2e` for all engines and test tools.
+
 The [sandbox.sh](./sandbox.sh) script does the heavy lifting.
 
 ### `llama.cpp`
@@ -53,13 +58,14 @@ checksum-verified. The sandbox reads them read-only.
 [MLX][5]'s `mlx_lm.server` exposes the an OpenAI-compatible API as well
 
 ```bash
-# Install mlx_lm or use `nix develop`
+# Install mlx_lm or use `nix develop .#mlx-lm`
 brew install mlx-lm
 
 # Sandbox it and run it
 ./sandbox.sh mlx-server --model mlx-community/Qwen3-8B-4bit
 
 # Vision models are automatically detected and served with `mlx_vlm.server`.
+# Use `nix develop .#mlx-vlm` to include vision support.
 ```
 
 ### MTPLX
@@ -68,7 +74,7 @@ brew install mlx-lm
 Anthropic API.
 
 ```bash
-# Install mtplx or use `nix develop`
+# Install mtplx or use `nix develop .#mtplx`
 brew install youssofal/mtplx/mtplx
 
 # Sandbox it and run it
