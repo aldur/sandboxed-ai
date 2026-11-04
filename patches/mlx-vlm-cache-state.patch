@@ -1,0 +1,46 @@
+--- a/mlx_vlm/turboquant.py
++++ b/mlx_vlm/turboquant.py
+@@ -4811,9 +4811,13 @@
+         cls, cache, bits: float, seed: int = DEFAULT_TURBOQUANT_SEED
+     ) -> "TurboQuantKVCache":
+         turbo_cache = cls(bits=bits, seed=seed)
+-        keys, values = cache.state
++        keys, values = cache.keys, cache.values
+         if keys is not None:
+-            turbo_cache.update_and_fetch(keys, values)
++            # Exclude unused buffer capacity.
++            turbo_cache.update_and_fetch(
++                keys[..., : cache.offset, :],
++                values[..., : cache.offset, :],
++            )
+         return turbo_cache
+ 
+     def _ensure_codecs(self, keys: mx.array, values: mx.array):
+--- a/mlx_vlm/tests/test_turboquant.py
++++ b/mlx_vlm/tests/test_turboquant.py
+@@ -127,6 +127,25 @@
+     assert isinstance(prompt_cache[1], TurboQuantKVCache)
+ 
+ 
++@pytest.mark.parametrize("length, trim", [(0, 0), (8, 0), (8, 3), (256, 0), (257, 0)])
++def test_turboquant_from_cache_preserves_active_length(length, trim):
++    source = KVCache()
++    if length:
++        source.update_and_fetch(
++            mx.random.normal((1, 2, length, 32)),
++            mx.random.normal((1, 2, length, 32)),
++        )
++        source.trim(trim)
++
++    converted = TurboQuantKVCache.from_cache(source, bits=3.5)
++
++    assert converted.offset == length - trim
++    if length:
++        keys, values = converted.dequantize(*converted.state)
++        assert keys.shape == (1, 2, length - trim, 32)
++        assert values.shape == keys.shape
++
++
+ def test_turboquant_cache_preserves_attention_shape_and_compresses_memory():
+     keys = mx.random.normal((1, 2, 16, 32))
+     values = mx.random.normal((1, 2, 16, 32))

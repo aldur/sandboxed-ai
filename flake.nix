@@ -146,6 +146,8 @@
             # Keep template detection in mlx-vlm to support both APIs.
             # https://github.com/Blaizzy/mlx-vlm/commit/c0a59acf8f16504f8209c6754714dcaabe06b6a1
             ./patches/mlx-vlm-tool-parser.patch
+            # mlx-lm 0.32 includes metadata and unused capacity in cache.state.
+            ./patches/mlx-vlm-cache-state.patch
             # mlx 0.32.2 (nanobind 2.15) no longer converts a 0-d mx.array
             # to a Python int. mlx-vlm 0.4.4 passes grid_thw cells to
             # mx.repeat / mx.tile that way, so the Qwen-VL family (and
