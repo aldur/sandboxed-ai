@@ -1,0 +1,51 @@
+--- a/mlx_vlm/tool_parsers/__init__.py
++++ b/mlx_vlm/tool_parsers/__init__.py
+@@ -1,31 +1,35 @@
+ """
+ Tool parser utilities for mlx-vlm.
+ 
+-Re-exports mlx_lm's _infer_tool_parser with additional model support,
++Infers tool parsers from chat templates,
+ and loads parsers from both mlx_lm.tool_parsers and mlx_vlm.tool_parsers.
+ """
+ 
+ import importlib
+ 
+-from mlx_lm.tokenizer_utils import _infer_tool_parser as _mlx_lm_infer_tool_parser
+-
+-# Additional patterns not covered by mlx_lm
+-_EXTRA_PATTERNS = [
+-    ("<|tool_call>", "gemma4"),
++_TEMPLATE_MARKERS = [
++    (("<minimax:tool_call>",), "minimax_m2"),
++    (("<|tool_call>", "<tool_call|>"), "gemma4"),
++    (("<start_function_call>",), "function_gemma"),
++    (("<longcat_tool_call>",), "longcat"),
++    (("<arg_key>",), "glm47"),
++    (("<|tool_list_start|>",), "pythonic"),
++    (("<tool_call>\\n<function=",), "qwen3_coder"),
++    (("<tool_call>\n<function=",), "qwen3_coder"),
++    (("<|tool_calls_section_begin|>",), "kimi_k2"),
++    (("[TOOL_CALLS]",), "mistral"),
++    (("<tool_call>", "tool_call.name"), "json_tools"),
++    (("<|tool_call>",), "gemma4"),
+ ]
+ 
+ 
+ def _infer_tool_parser(chat_template):
+-    """Infer tool parser type, checking mlx_lm patterns first then extras."""
+-    result = _mlx_lm_infer_tool_parser(chat_template)
+-    if result is not None:
+-        return result
+-
++    """Infer the tool parser type from the chat template."""
+     if not isinstance(chat_template, str):
+         return None
+ 
+-    for marker, parser_type in _EXTRA_PATTERNS:
+-        if marker in chat_template:
++    for markers, parser_type in _TEMPLATE_MARKERS:
++        if all(marker in chat_template for marker in markers):
+             return parser_type
+ 
+     return None

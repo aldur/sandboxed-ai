@@ -142,6 +142,10 @@
             # Serve on a UNIX domain socket when --host ends in .sock,
             # mirroring llama-server's convention (see sandbox.sh --host).
             ./patches/mlx-vlm-unix-socket.patch
+            # mlx-lm 0.32 expects a tokenizer instead of a template string.
+            # Keep template detection in mlx-vlm to support both APIs.
+            # https://github.com/Blaizzy/mlx-vlm/commit/c0a59acf8f16504f8209c6754714dcaabe06b6a1
+            ./patches/mlx-vlm-tool-parser.patch
             # mlx 0.32.2 (nanobind 2.15) no longer converts a 0-d mx.array
             # to a Python int. mlx-vlm 0.4.4 passes grid_thw cells to
             # mx.repeat / mx.tile that way, so the Qwen-VL family (and
@@ -149,6 +153,11 @@
             # Backport of upstream #1982, first released in v0.6.16.
             ./patches/mlx-vlm-array-as-int.patch
           ];
+          postCheck = ''
+            ${old.postCheck or ""}
+            python ${./tests/mlx-vlm-tool-parser.py} \
+              "$out/${mlxPython.sitePackages}/mlx_vlm/tool_parsers/__init__.py"
+          '';
           # mlx 0.32 rejects the zero-size AvgPool2d kernel this test's
           # Gemma3 config computes; mlx-vlm 0.4.4 predates that mlx.
           # One known-incompatible test — the rest of the suite still runs.
