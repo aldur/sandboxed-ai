@@ -34,14 +34,14 @@
           (
             finalAttrs: old: {
               # Track upstream releases independently of nixpkgs.
-              version = "12040";
+              version = "12226";
               # nixpkgs backports target its own source version.
               patches = [ ];
               src = pkgs.fetchFromGitHub {
                 owner = "ggml-org";
                 repo = "llama.cpp";
                 tag = "b${finalAttrs.version}";
-                hash = "sha256-l/fb4fHcAGghKt60XkCNpv0NjTQjeFcXUEnoxLFDT5Y=";
+                hash = "sha256-iJw477MjKOmGaVxK0ohmiBE/wc0SZx4ERkm2HcwVaLE=";
                 leaveDotGit = true;
                 postFetch = ''
                   git -C "$out" rev-parse --short HEAD > $out/COMMIT
