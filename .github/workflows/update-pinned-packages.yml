@@ -22,9 +22,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # llama.cpp is pinned to an upstream release tag (b<version>).
+          # llama.cpp is pinned to an upstream release tag (v<version>).
+          # Upstream marks its b<build> tags as prereleases, so read the
+          # prerelease flag from the releases API: the ATOM feed lists only
+          # the newest builds and soon drops the last stable release.
           - package: llama-cpp
-            nix-update-args: --version=stable --version-regex 'b(.*)'
+            nix-update-args: --version=stable --use-github-releases --version-regex 'v(.*)'
             verify: nix build .#llama-cpp -L
           # mtplx is pinned to a PyPI release (pure-python wheel);
           # nix-update resolves the latest version and hash from PyPI.
@@ -49,8 +52,13 @@ jobs:
           diagnostic-endpoint: ""
 
       - name: Bump ${{ matrix.package }} with nix-update
+        env:
+          # The releases API rate-limits unauthenticated requests.
+          GITHUB_TOKEN: ${{ github.token }}
+        # --inputs-from pins nix-update to flake.lock: releases API
+        # pagination needs nix-update >= 1.16.0.
         run: |
-          nix run nixpkgs#nix-update -- \
+          nix run --inputs-from . nixpkgs#nix-update -- \
             --flake \
             ${{ matrix.nix-update-args }} \
             ${{ matrix.package }}
